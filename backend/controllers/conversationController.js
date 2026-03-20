@@ -1,15 +1,26 @@
 const Conversation = require('../models/Conversation');
 
 const createConversation = async (req, res) => {
-  const newConversation = new Conversation({
-    id: req.isSeller ? req.userId + req.body.to : req.body.to + req.userId,
-    sellerId: req.isSeller ? req.userId : req.body.to,
-    buyerId: req.isSeller ? req.body.to : req.userId,
-    readBySeller: req.isSeller,
-    readByBuyer: !req.isSeller,
-  });
-
   try {
+    const { to_user_id, project_id } = req.body;
+    
+    // Check if conversation exists
+    const existing = await Conversation.findOne({
+      project_id: project_id || null,
+      $or: [
+        { user1_id: req.userId, user2_id: to_user_id },
+        { user1_id: to_user_id, user2_id: req.userId }
+      ]
+    });
+
+    if (existing) return res.status(200).json(existing);
+
+    const newConversation = new Conversation({
+      user1_id: req.userId,
+      user2_id: to_user_id,
+      project_id: project_id || null
+    });
+
     const savedConversation = await newConversation.save();
     res.status(201).json(savedConversation);
   } catch (err) {
@@ -17,18 +28,12 @@ const createConversation = async (req, res) => {
   }
 };
 
-const updateConversation = async (req, res) => {
+const getConversations = async (req, res) => {
   try {
-    const updatedConversation = await Conversation.findOneAndUpdate(
-      { id: req.params.id },
-      {
-        $set: {
-          ...(req.isSeller ? { readBySeller: true } : { readByBuyer: true }),
-        },
-      },
-      { new: true }
-    );
-    res.status(200).json(updatedConversation);
+    const conversations = await Conversation.find({
+      $or: [{ user1_id: req.userId }, { user2_id: req.userId }]
+    }).sort({ updated_at:-1 });
+    res.status(200).json(conversations);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -36,23 +41,17 @@ const updateConversation = async (req, res) => {
 
 const getSingleConversation = async (req, res) => {
   try {
-    const conversation = await Conversation.findOne({ id: req.params.id });
-    if (!conversation) return res.status(404).json({ message: "Not found!" });
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) return res.status(404).json({ message: "Conversation not found!" });
+
+    if (conversation.user1_id.toString() !== req.userId && conversation.user2_id.toString() !== req.userId) {
+        return res.status(403).json({ message: "Not authorized!" });
+    }
+
     res.status(200).json(conversation);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-const getConversations = async (req, res) => {
-  try {
-    const conversations = await Conversation.find(
-      req.isSeller ? { sellerId: req.userId } : { buyerId: req.userId }
-    ).sort({ updatedAt: -1 });
-    res.status(200).json(conversations);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-module.exports = { createConversation, updateConversation, getSingleConversation, getConversations };
+module.exports = { createConversation, getConversations, getSingleConversation };
