@@ -1,25 +1,21 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, vec, Env, String, Vec};
+use soroban_sdk::{Address, Env, String, Symbol, Vec, contract, contractimpl, vec};
 
 #[contract]
-pub struct Contract;
+pub struct ReputationLedger;
 
 #[contractimpl]
-impl Contract {
-    pub fn get_reputation(env: Env, to: String) -> Vec<String> {
-        vec![&env, String::from_str(&env, "Hello"), to]
+impl ReputationLedger {
+    pub fn get_reputation(env: Env, user: Address, category: Symbol) -> i32 {
+        vec![&env, String::from_str(&env, "Hello")]
     }
     
-    pub fn add_reputation(env: Env, to: String) -> Vec<String> {
-        vec![&env, String::from_str(&env, "Hello"), to]
+    pub fn add_reputation(env: Env, user: Address, category: Symbol, delta: i32, platform: Address) -> Result {
+        vec![&env, String::from_str(&env, "Hello")]
     }
     
-    pub fn delta(env: Env, to: String) -> Vec<String> {
-        vec![&env, String::from_str(&env, "Hello"), to]
-    }
-    
-    pub fn shadowban(env: Env, to: String) -> Vec<String> {
-        vec![&env, String::from_str(&env, "Hello"), to]
+    pub fn shadowban(env: Env, user: Address, platform: Address) -> Result {
+        vec![&env, String::from_str(&env, "Hello")]
     }
 }
 
