@@ -9,16 +9,16 @@ interface ReputationBarProps {
 export default function ReputationBar({ label, score, maxScore = 200 }: ReputationBarProps) {
   const pct = Math.min((score / maxScore) * 100, 100);
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-widest">
+        <span className="text-[10.5px] font-semibold text-zinc-400 uppercase tracking-widest">
           {label}
         </span>
-        <span className="text-sm font-semibold text-zinc-900">{score} pts</span>
+        <span className="text-sm font-bold text-zinc-900">{score} <span className="text-xs font-normal text-zinc-400">pts</span></span>
       </div>
-      <div className="h-1 bg-zinc-100 rounded-full">
+      <div className="rep-bar-track">
         <div
-          className="h-full bg-[#81DA47] rounded-full transition-all duration-700"
+          className="rep-bar-fill"
           style={{ width: `${pct}%` }}
         />
       </div>

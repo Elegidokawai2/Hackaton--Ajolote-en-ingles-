@@ -12,8 +12,8 @@ export default function Card({ children, className, clickable = false, onClick }
   return (
     <div
       className={cn(
-        'bg-white rounded-xl border border-zinc-100 p-6',
-        clickable && 'cursor-pointer hover:border-zinc-300 transition-all duration-150',
+        'card p-6',
+        clickable && 'card-clickable',
         className
       )}
       onClick={onClick}

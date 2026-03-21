@@ -20,19 +20,19 @@ export default function Button({
   children,
   ...props
 }: ButtonProps) {
-  const base = 'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-150 cursor-pointer';
+  const base = 'btn font-medium cursor-pointer inline-flex items-center gap-1.5 select-none';
 
   const variants = {
-    primary: 'bg-zinc-900 text-white hover:bg-[#81DA47] hover:text-zinc-900',
-    secondary: 'border border-zinc-200 bg-white text-zinc-700 hover:border-zinc-400',
-    danger: 'border border-red-200 bg-white text-red-600 hover:bg-red-50',
-    ghost: 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100',
+    primary: 'btn-primary',
+    secondary: 'btn-secondary',
+    danger: 'border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 rounded-[9px] transition-all duration-150',
+    ghost: 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-[9px] transition-all duration-150',
   };
 
   const sizes = {
     sm: 'px-3 py-1.5 text-xs',
     md: 'px-4 py-2 text-sm',
-    lg: 'px-6 py-2.5 text-sm',
+    lg: 'px-5 py-2.5 text-sm',
   };
 
   const isDisabled = disabled || loading;
@@ -43,14 +43,13 @@ export default function Button({
         base,
         variants[variant],
         sizes[size],
-        isDisabled && 'opacity-40 cursor-not-allowed',
-        loading && 'opacity-60',
+        isDisabled && 'opacity-40 cursor-not-allowed pointer-events-none',
         className
       )}
       disabled={isDisabled}
       {...props}
     >
-      {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+      {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
       {children}
     </button>
   );
