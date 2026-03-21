@@ -286,3 +286,251 @@ get_event(event_id: u64) -> EventData
 Retorna los datos completos de un evento dado su `event_id`.
 
 # ProjectContract
+
+### Descripción
+
+`ProjectContract` es el contrato inteligente encargado de gestionar proyectos privados dentro de la plataforma ProofWork.
+
+A diferencia de `EventContract` (competencia abierta), un proyecto es un **acuerdo bilateral** entre un reclutador y un freelancer específico previamente asignado. El reclutador deposita el pago y una garantía en escrow, y el contrato gestiona el ciclo de vida completo: aceptación, entrega, correcciones, disputas y pagos.
+
+---
+
+## Modelo de Datos
+
+### `ProjectData`
+
+| Campo              | Tipo            | Descripción                                                        |
+|--------------------|-----------------|--------------------------------------------------------------------|
+| `recruiter`        | `Address`       | Cuenta del reclutador que creó el proyecto                         |
+| `freelancer`       | `Address`       | Cuenta del freelancer asignado                                     |
+| `amount`           | `i128`          | Pago principal por el trabajo                                      |
+| `guarantee`        | `i128`          | Garantía adicional depositada por el reclutador                    |
+| `deadline`         | `u64`           | Timestamp límite del proyecto                                      |
+| `status`           | `ProjectStatus` | Estado actual del proyecto                                         |
+| `delivery_hash`    | `BytesN<32>`    | Hash del entregable enviado (cero si aún no se ha enviado)         |
+| `correction_count` | `u32`           | Número de rondas de corrección solicitadas (máximo 2)              |
+| `category`         | `Symbol`        | Categoría del proyecto (usada para actualizar reputación)          |
+
+### `ProjectStatus`
+
+| Variante      | Descripción                                                              |
+|---------------|--------------------------------------------------------------------------|
+| `Created`     | Proyecto creado, esperando que el freelancer acepte                      |
+| `Active`      | Freelancer aceptó, trabajo en curso                                      |
+| `Delivered`   | Freelancer entregó, esperando revisión del reclutador                    |
+| `Correcting`  | Reclutador solicitó correcciones, freelancer debe re-entregar            |
+| `Disputed`    | Entrega rechazada, disputa abierta pendiente de resolución del admin     |
+| `Completed`   | Proyecto aprobado y pago distribuido                                     |
+| `Cancelled`   | Proyecto cancelado, fondos devueltos al reclutador                       |
+
+### Claves de almacenamiento (`DataKey`)
+
+| Clave            | Tipo          | Descripción                                        |
+|------------------|---------------|----------------------------------------------------|
+| `Admin`          | `Address`     | Dirección del administrador de la plataforma       |
+| `Token`          | `Address`     | Dirección del token de pago                        |
+| `ReputationAddr` | `Address`     | Dirección del contrato `ReputationLedger`          |
+| `PlatformAddr`   | `Address`     | Dirección que recibe comisiones (reservada)        |
+| `Counter`        | `u64`         | Contador auto-incremental para IDs de proyectos    |
+| `Project(u64)`   | `ProjectData` | Datos del proyecto identificado por su ID          |
+
+---
+
+## Control de Acceso
+
+| Función               | Quién puede ejecutarla                    |
+|-----------------------|-------------------------------------------|
+| `initialize`          | Admin (una sola vez)                      |
+| `create_project`      | Cualquier reclutador                      |
+| `accept_project`      | Solo el freelancer asignado               |
+| `submit_delivery`     | Solo el freelancer asignado               |
+| `approve_delivery`    | Solo el reclutador del proyecto           |
+| `request_correction`  | Solo el reclutador del proyecto           |
+| `reject_delivery`     | Solo el reclutador del proyecto           |
+| `resolve_dispute`     | Solo el admin                             |
+| `timeout_approve`     | Cualquier cuenta (tras vencer el deadline)|
+| `timeout_refund`      | Cualquier cuenta (tras vencer el deadline)|
+| `get_project`         | Cualquier cuenta (lectura pública)        |
+
+---
+
+## Flujo del Proyecto
+```
+create_project
+      ↓
+accept_project
+      ↓
+submit_delivery ←────────────────────────────┐
+      ↓                                       │
+      ├── approve_delivery → [Completed]      │
+      │                                       │
+      ├── request_correction (máx. 2) ────────┘
+      │         ↓ (si se agotaron las rondas)
+      └── reject_delivery → [Disputed]
+                    ↓
+             resolve_dispute
+              ├── favor freelancer → [Completed]
+              └── favor reclutador → [Cancelled]
+
+Timeouts (cualquier cuenta puede invocarlos):
+  - timeout_approve: si status = Delivered y deadline vencido → [Completed]
+  - timeout_refund:  si status = Created   y deadline vencido → [Cancelled]
+```
+
+---
+
+## Escrow y distribución de fondos
+
+Al crear el proyecto, el reclutador deposita `amount + guarantee` en escrow.
+
+| Escenario                        | Destino de los fondos                              |
+|----------------------------------|----------------------------------------------------|
+| Entrega aprobada                 | `amount + guarantee` → freelancer                  |
+| Disputa resuelta a favor del freelancer | `amount + guarantee` → freelancer           |
+| Disputa resuelta a favor del reclutador | `amount + guarantee` → reclutador          |
+| Timeout sin aceptación (`Created`) | `amount + guarantee` → reclutador               |
+| Timeout sin revisión (`Delivered`) | `amount + guarantee` → freelancer               |
+
+> A diferencia de `EventContract`, `ProjectContract` **no cobra comisión de plataforma** en ningún escenario. La dirección `PlatformAddr` está reservada en el almacenamiento pero no se utiliza en la lógica actual.
+
+---
+
+## Funciones del contrato
+
+---
+
+### `initialize`
+```rust
+initialize(admin: Address, token: Address, reputation_addr: Address)
+```
+
+Inicializa el contrato. Solo puede ejecutarse una vez; llamadas posteriores generan un panic.
+
+Registra el `admin`, el token de pago y la dirección del contrato de reputación.
+
+---
+
+### `create_project`
+```rust
+create_project(recruiter: Address, freelancer: Address, amount: i128, guarantee: i128, deadline: u64, category: Symbol) -> u64
+```
+
+Crea un nuevo proyecto y transfiere `amount + guarantee` al contrato en escrow. Retorna el `project_id` único generado.
+
+Requisitos:
+- `amount` debe ser mayor a 0.
+- `guarantee` debe ser mayor o igual a 0.
+
+---
+
+### `accept_project`
+```rust
+accept_project(project_id: u64, freelancer: Address)
+```
+
+El freelancer asignado acepta el proyecto, activando el estado `Active`.
+
+Requisitos:
+- El proyecto debe estar en estado `Created`.
+- Solo el freelancer registrado en el proyecto puede aceptar.
+
+---
+
+### `submit_delivery`
+```rust
+submit_delivery(project_id: u64, freelancer: Address, delivery_hash: BytesN<32>)
+```
+
+El freelancer envía su entregable como un hash de 32 bytes, cambiando el estado a `Delivered`.
+
+Requisitos:
+- Solo el freelancer asignado puede enviar.
+- El proyecto debe estar en estado `Active` o `Correcting`.
+
+---
+
+### `approve_delivery`
+```rust
+approve_delivery(project_id: u64, recruiter: Address)
+```
+
+El reclutador aprueba la entrega. Transfiere `amount + guarantee` al freelancer y otorga +5 puntos de reputación en la categoría del proyecto.
+
+Requisitos:
+- Solo el reclutador del proyecto puede aprobar.
+- El proyecto debe estar en estado `Delivered`.
+
+---
+
+### `request_correction`
+```rust
+request_correction(project_id: u64, recruiter: Address)
+```
+
+El reclutador solicita una ronda de correcciones, cambiando el estado a `Correcting`.
+
+Requisitos:
+- Solo el reclutador del proyecto puede solicitarlas.
+- El proyecto debe estar en estado `Delivered`.
+- No se pueden solicitar más de **2 rondas de corrección** en total.
+
+---
+
+### `reject_delivery`
+```rust
+reject_delivery(project_id: u64, recruiter: Address)
+```
+
+El reclutador rechaza la entrega definitivamente, abriendo una disputa (`Disputed`) para resolución del admin.
+
+Requisitos:
+- Solo el reclutador del proyecto puede rechazar.
+- El proyecto debe estar en estado `Delivered`.
+
+---
+
+### `resolve_dispute`
+```rust
+resolve_dispute(project_id: u64, admin: Address, favor_freelancer: bool)
+```
+
+El admin resuelve una disputa abierta. Si `favor_freelancer` es `true`, el freelancer recibe `amount + guarantee` y +5 puntos de reputación. Si es `false`, los fondos son devueltos al reclutador.
+
+Requisitos:
+- Solo el admin registrado puede ejecutar esta función.
+- El proyecto debe estar en estado `Disputed`.
+
+---
+
+### `timeout_approve`
+```rust
+timeout_approve(project_id: u64)
+```
+
+Si el reclutador no revisa una entrega antes del `deadline`, cualquier cuenta puede invocar esta función para auto-aprobar el proyecto. El freelancer recibe `amount + guarantee` y +5 puntos de reputación.
+
+Requisitos:
+- El proyecto debe estar en estado `Delivered`.
+- El timestamp actual debe ser posterior al `deadline`.
+
+---
+
+### `timeout_refund`
+```rust
+timeout_refund(project_id: u64)
+```
+
+Si el freelancer nunca aceptó el proyecto antes del `deadline`, cualquier cuenta puede invocar esta función para devolver `amount + guarantee` al reclutador.
+
+Requisitos:
+- El proyecto debe estar en estado `Created`.
+- El timestamp actual debe ser posterior al `deadline`.
+
+---
+
+### `get_project`
+```rust
+get_project(project_id: u64) -> ProjectData
+```
+
+Retorna los datos completos de un proyecto dado su `project_id`.

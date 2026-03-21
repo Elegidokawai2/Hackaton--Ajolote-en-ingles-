@@ -39,10 +39,11 @@ pub enum DataKey {
     Admin,
     Token,
     ReputationAddr,
+    PlatformAddr,     // Plataforma a la que se le va la comisión
     Project(u64),
     Counter,
 }
-
+ 
 // ─── Contract ───────────────────────────────────────────────────────────────
 
 #[contract]
@@ -52,7 +53,7 @@ pub struct ProjectContract;
 impl ProjectContract {
     // ── Inicialización ──────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address, token: Address, reputation_addr: Address) {
+    pub fn initialize(env: Env, admin: Address, token: Address, reputation_addr: Address, platform_addr: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
@@ -62,6 +63,9 @@ impl ProjectContract {
         env.storage()
             .instance()
             .set(&DataKey::ReputationAddr, &reputation_addr);
+        env.storage()
+            .instance()
+            .set(&DataKey::PlatformAddr, &platform_addr);
         env.storage().instance().set(&DataKey::Counter, &0u64);
     }
 
@@ -84,6 +88,12 @@ impl ProjectContract {
         }
         if guarantee < 0 {
             panic!("guarantee must be non-negative");
+        }
+
+        let now = env.ledger().timestamp();
+        let one_day_secs: u64 = 24 * 60 * 60;
+        if deadline < now + one_day_secs {
+            panic!("deadline must be at least 1 day from now")
         }
 
         // Transferir amount + guarantee al contrato (escrow)
@@ -193,17 +203,18 @@ impl ProjectContract {
             panic!("project must be in Delivered status");
         }
 
-        // Pagar al freelancer: amount + guarantee
+        let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        let total = project.amount + project.guarantee;
-        token_client.transfer(
-            &env.current_contract_address(),
-            &project.freelancer,
-            &total,
-        );
 
-        // Actualizar reputación del freelancer
+        // 7% sobre el total en escrow (amount + guarantee)
+        let total_escrow = project.amount + project.guarantee;
+        let commission = total_escrow * 7 / 100;
+        let payout = total_escrow - commission;
+
+        token_client.transfer(&env.current_contract_address(), &platform, &commission);
+        token_client.transfer(&env.current_contract_address(), &project.freelancer, &payout);
+
         Self::update_reputation(&env, &project.freelancer, &project.category, 5);
 
         project.status = ProjectStatus::Completed;
@@ -291,27 +302,23 @@ impl ProjectContract {
             panic!("project must be in Disputed status");
         }
 
+        let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        let total = project.amount + project.guarantee;
+
+        let total_escrow = project.amount + project.guarantee;
+        let commission = total_escrow * 7 / 100;
+        let payout = total_escrow - commission;
+
+        // La comisión se cobra siempre, independientemente de a quién favorezca la disputa
+        token_client.transfer(&env.current_contract_address(), &platform, &commission);
 
         if favor_freelancer {
-            // Pagar al freelancer
-            token_client.transfer(
-                &env.current_contract_address(),
-                &project.freelancer,
-                &total,
-            );
-            // Actualizar reputación
+            token_client.transfer(&env.current_contract_address(), &project.freelancer, &payout);
             Self::update_reputation(&env, &project.freelancer, &project.category, 5);
             project.status = ProjectStatus::Completed;
         } else {
-            // Devolver fondos al reclutador
-            token_client.transfer(
-                &env.current_contract_address(),
-                &project.recruiter,
-                &total,
-            );
+            token_client.transfer(&env.current_contract_address(), &project.recruiter, &payout);
             project.status = ProjectStatus::Cancelled;
         }
 
@@ -340,15 +347,16 @@ impl ProjectContract {
             panic!("deadline has not passed yet");
         }
 
-        // Auto-aprobar: pagar al freelancer
+        let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        let total = project.amount + project.guarantee;
-        token_client.transfer(
-            &env.current_contract_address(),
-            &project.freelancer,
-            &total,
-        );
+
+        let total_escrow = project.amount + project.guarantee;
+        let commission = total_escrow * 7 / 100;
+        let payout = total_escrow - commission;
+
+        token_client.transfer(&env.current_contract_address(), &platform, &commission);
+        token_client.transfer(&env.current_contract_address(), &project.freelancer, &payout);
 
         Self::update_reputation(&env, &project.freelancer, &project.category, 5);
 
@@ -367,8 +375,9 @@ impl ProjectContract {
             .get(&DataKey::Project(project_id))
             .unwrap();
 
-        if project.status != ProjectStatus::Created {
-            panic!("project must be in Created status for timeout_refund");
+        // Bug corregido: && en lugar de ||
+        if project.status != ProjectStatus::Created && project.status != ProjectStatus::Correcting {
+            panic!("project must be in Created or Correcting status for timeout_refund");
         }
 
         let now = env.ledger().timestamp();
@@ -376,15 +385,16 @@ impl ProjectContract {
             panic!("deadline has not passed yet");
         }
 
-        // Devolver fondos al reclutador
+        let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        let total = project.amount + project.guarantee;
-        token_client.transfer(
-            &env.current_contract_address(),
-            &project.recruiter,
-            &total,
-        );
+
+        let total_escrow = project.amount + project.guarantee;
+        let commission = total_escrow * 7 / 100;
+        let payout = total_escrow - commission;
+
+        token_client.transfer(&env.current_contract_address(), &platform, &commission);
+        token_client.transfer(&env.current_contract_address(), &project.recruiter, &payout);
 
         project.status = ProjectStatus::Cancelled;
         env.storage()
