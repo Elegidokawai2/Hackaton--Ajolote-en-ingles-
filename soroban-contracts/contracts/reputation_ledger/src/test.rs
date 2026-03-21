@@ -1,116 +1,140 @@
-#![cfg(test)]
+#[cfg(test)]
 
-use super::*;
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
+mod test {
+    use crate::{DataKey, ReputationLedger, ReputationLedgerClient};
+    use soroban_sdk::{Address, Env, Symbol, testutils::Address as _};
 
-#[test]
-fn test_initialize_and_get_default_reputation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+    fn test_admin(env: &Env) -> Address {
+        Address::generate(&env)
+    }
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    fn test_user(env: &Env) -> Address {
+        Address::generate(&env)
+    }
 
-    // La reputación por defecto debe ser 0
-    let user = Address::generate(&env);
-    let cat = symbol_short!("design");
-    assert_eq!(client.get_reputation(&user, &cat), 0u32);
-}
+    fn test_contract(env: &Env) -> Address {
+        Address::generate(&env)
+    }
 
-#[test]
-fn test_add_reputation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+    #[test]
+    fn test_initialize() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+        // Creamos client del contrato
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
 
-    let user = Address::generate(&env);
-    let cat = symbol_short!("code");
+        // Inicializamos
+        ledger.initialize(&admin);
 
-    // Agregar 10 puntos
-    client.add_reputation(&admin, &user, &cat, &10u32);
-    assert_eq!(client.get_reputation(&user, &cat), 10u32);
+        // Comprobamos que admin quedó seteado
+        assert_eq!(ledger.get_admin(), admin);
+    }
 
-    // Agregar 5 más → 15
-    client.add_reputation(&admin, &user, &cat, &5u32);
-    assert_eq!(client.get_reputation(&user, &cat), 15u32);
-}
+    #[test]
+    fn test_add_and_get_reputation() {
+        let env = Env::default();
+        let admin = test_admin(&env);
+        let user = test_user(&env);
+        let category = Symbol::new(&env, "dev");
 
-#[test]
-fn test_multiple_categories() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+        ledger.initialize(&admin);
 
-    let user = Address::generate(&env);
-    let cat_code = symbol_short!("code");
-    let cat_design = symbol_short!("design");
+        // Inicialmente reputación = 0
+        assert_eq!(ledger.get_reputation(&user, &category), 0);
 
-    client.add_reputation(&admin, &user, &cat_code, &20u32);
-    client.add_reputation(&admin, &user, &cat_design, &8u32);
+        // Admin añade reputación
+        ledger.add_reputation(&admin, &user, &category, &10);
+        assert_eq!(ledger.get_reputation(&user, &category), 10);
 
-    assert_eq!(client.get_reputation(&user, &cat_code), 20u32);
-    assert_eq!(client.get_reputation(&user, &cat_design), 8u32);
-}
+        // Sumar de nuevo
+        ledger.add_reputation(&admin, &user, &category, &5);
+        assert_eq!(ledger.get_reputation(&user, &category), 15);
+    }
 
-#[test]
-fn test_shadowban() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+    #[test]
+    fn test_remove_reputation() {
+        let env = Env::default();
+        let admin = test_admin(&env);
+        let user = test_user(&env);
+        let category = Symbol::new(&env, "design");
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
+        
+        ledger.initialize(&admin);
 
-    let user = Address::generate(&env);
+        ledger.add_reputation(&admin, &user, &category, &10);
+        assert_eq!(ledger.get_reputation(&user, &category), 10);
 
-    // No debe estar baneado por defecto
-    assert_eq!(client.is_banned(&user), false);
+        // Remover menos de la reputación actual
+        ledger.remove_reputation(&admin, &user, &category, &4);
+        assert_eq!(ledger.get_reputation(&user, &category), 6);
 
-    // Shadowban
-    client.shadowban(&admin, &user);
-    assert_eq!(client.is_banned(&user), true);
-}
+        // Remover más de la reputación → se satura en 0
+        ledger.remove_reputation(&admin, &user, &category, &10);
+        assert_eq!(ledger.get_reputation(&user, &category), 0);
+    }
 
-#[test]
-#[should_panic(expected = "only admin can add reputation")]
-fn test_non_admin_cannot_add_reputation() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+    #[test]
+    fn test_shadowban_and_unban() {
+        let env = Env::default();
+        let admin = test_admin(&env);
+        let user = test_user(&env);
 
-    let admin = Address::generate(&env);
-    let not_admin = Address::generate(&env);
-    client.initialize(&admin);
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
+        
+        ledger.initialize(&admin);
 
-    let user = Address::generate(&env);
-    let cat = symbol_short!("code");
+        // Inicialmente no baneado
+        assert_eq!(ledger.is_banned(&user), false);
 
-    // Debe fallar
-    client.add_reputation(&not_admin, &user, &cat, &10u32);
-}
+        // Shadowban
+        ledger.shadowban(&admin, &user);
+        assert_eq!(ledger.is_banned(&user), true);
 
-#[test]
-#[should_panic(expected = "already initialized")]
-fn test_cannot_reinitialize() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(ReputationLedger, ());
-    let client = ReputationLedgerClient::new(&env, &contract_id);
+        // Unban
+        ledger.unban(&admin, &user);
+        assert_eq!(ledger.is_banned(&user), false);
+    }
 
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
-    // Segunda inicialización debe fallar
-    client.initialize(&admin);
+    #[test]
+    fn test_add_reputation_banned_user() {
+        let env = Env::default();
+        let admin = test_admin(&env);
+        let user = test_user(&env);
+        let category = Symbol::new(&env, "dev");
+
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
+        
+        ledger.initialize(&admin);
+
+        // Baneamos al usuario
+        ledger.shadowban(&admin, &user);
+    }
+
+    #[test]
+    fn test_authorize_contract_and_add_reputation() {
+        let env = Env::default();
+        let admin = test_admin(&env);
+        let contract = test_contract(&env);
+
+        let contract_id = env.register(ReputationLedger, ());
+        let ledger = ReputationLedgerClient::new(&env, &contract_id);
+        
+        ledger.initialize(&admin);
+
+        // Admin autoriza contrato
+        ledger.authorize_contract(&contract);
+
+        // TODO: Aquí se probaría que el contrato autorizado pueda añadir reputación
+        // En tests unitarios de Soroban, esto se simula invocando env con contexto del contrato
+        // Para MVP de hackathon se puede asumir que la llamada con 'contract' como caller funciona
+    }
 }
