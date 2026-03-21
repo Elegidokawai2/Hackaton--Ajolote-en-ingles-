@@ -1,5 +1,0 @@
-1:"$Sreact.fragment"
-2:I[64381,["/_next/static/chunks/10inqx9ib~r0e.js","/_next/static/chunks/0hf.94qi4xzx6.js","/_next/static/chunks/0nz2qlxv3r.27.js"],"ViewportBoundary"]
-3:I[64381,["/_next/static/chunks/10inqx9ib~r0e.js","/_next/static/chunks/0hf.94qi4xzx6.js","/_next/static/chunks/0nz2qlxv3r.27.js"],"MetadataBoundary"]
-4:"$Sreact.suspense"
-0:{"rsc":["$","$1","h",{"children":[["$","meta",null,{"name":"robots","content":"noindex"}],["$","$L2",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","div",null,{"hidden":true,"children":["$","$L3",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"ProofWork — Reputación On-Chain para Freelancers"}],["$","meta","1",{"name":"description","content":"Plataforma gamificada de freelancers con reputación on-chain sobre Stellar. Conecta freelancers con reclutadores a través de eventos de competencia y contratos 1:1."}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"isPartial":false,"staleTime":300,"varyParams":null,"buildId":"QbYMtfMQsmzKg4W6AeuDn"}

@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///Users/ander/DEV/ME/Hackaton--Ajolote-en-ingles-/frontend/src/app/ToasterProvider.tsx"],"sourcesContent":["'use client';\n\nimport { Toaster } from 'sileo';\n\nexport default function ToasterProvider() {\n  return <Toaster position=\"bottom-right\" />;\n}\n"],"names":["ToasterProvider","position"],"mappings":";;;;;AAEA;AAFA;;;AAIe,SAASA;IACtB,qBAAO,0PAAC,8JAAO;QAACC,UAAS;;;;;;AAC3B"}}]
-}
