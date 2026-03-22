@@ -1,4 +1,5 @@
 const { Wallet, Transaction, Escrow } = require('../models/Wallet');
+const { getAccountBalances } = require('../services/stellarService');
 const { createNotification } = require('../services/notificationService');
 
 const getWallet = async (req, res) => {
@@ -12,7 +13,14 @@ const getWallet = async (req, res) => {
       });
       await wallet.save();
     }
-    res.status(200).json(wallet);
+
+    // Fetch real on-chain balances from Stellar Horizon
+    const on_chain_balances = await getAccountBalances(wallet.stellar_address);
+
+    res.status(200).json({
+      ...wallet.toObject(),
+      on_chain_balances,
+    });
   } catch(err) {
     res.status(500).json({ error: err.message });
   }
@@ -145,4 +153,24 @@ const withdrawFunds = async (req, res) => {
   }
 };
 
-module.exports = { getWallet, getTransactions, getEscrows, getBalance, depositFunds, withdrawFunds };
+/**
+ * Get on-chain balance for the authenticated user directly from Stellar Horizon.
+ */
+const getOnChainBalance = async (req, res) => {
+  try {
+    const wallet = await Wallet.findOne({ user_id: req.userId });
+    if (!wallet) return res.status(404).json({ message: 'Wallet not found!' });
+
+    const on_chain_balances = await getAccountBalances(wallet.stellar_address);
+
+    res.status(200).json({
+      user_id: req.userId,
+      stellar_address: wallet.stellar_address,
+      on_chain_balances,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+module.exports = { getWallet, getTransactions, getEscrows, getBalance, depositFunds, withdrawFunds, getOnChainBalance };

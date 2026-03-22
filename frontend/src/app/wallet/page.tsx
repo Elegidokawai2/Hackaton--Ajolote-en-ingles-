@@ -117,12 +117,28 @@ export default function WalletPage() {
                 <div>
                   <div className="flex items-center gap-2 mb-3">
                     <Wallet className="w-4 h-4 text-[#60b8f0]" />
-                    <p className="text-[10.5px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Saldo disponible</p>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Saldo on-chain</p>
                   </div>
-                  <p className="text-5xl font-bold text-white tabular-nums leading-none mb-1">
-                    {formatMXN(wallet?.balance_mxne || 0)}
-                  </p>
-                  <p className="text-xs" style={{ color: 'var(--text-3)' }}>MXN · Stellar Network</p>
+
+                  {wallet?.on_chain_balances && wallet.on_chain_balances.length > 0 ? (
+                    <div className="space-y-2">
+                      {wallet.on_chain_balances.map((b, i) => (
+                        <div key={i} className="flex items-baseline gap-2">
+                          <p className="text-4xl font-bold text-white tabular-nums leading-none">
+                            {parseFloat(b.balance).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 7 })}
+                          </p>
+                          <span className="text-sm font-semibold text-[#60b8f0]">{b.asset_code || b.asset_type}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-4xl font-bold text-white tabular-nums leading-none mb-1">0.00</p>
+                      <p className="text-xs" style={{ color: 'var(--text-3)' }}>Sin fondos · La cuenta no ha sido activada en Stellar Network</p>
+                    </div>
+                  )}
+
+                  <p className="text-xs mt-2" style={{ color: 'var(--text-3)' }}>Stellar Network · {process.env.NEXT_PUBLIC_NETWORK === 'mainnet' ? 'Mainnet' : 'Testnet'}</p>
                 </div>
                 {wallet?.stellar_address && (
                   <button

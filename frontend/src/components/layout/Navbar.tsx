@@ -8,7 +8,7 @@ import { formatMXN, formatRelative } from '@/lib/utils';
 import Avatar from '@/components/ui/Avatar';
 import { Menu, X, LogOut, Wallet, Bell } from 'lucide-react';
 import api from '@/lib/api';
-import type { Notification } from '@/types';
+import type { Notification, StellarBalance } from '@/types';
 
 const freelancerLinks = [
   { href: '/events', label: 'Eventos' },
@@ -45,7 +45,7 @@ export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [balance, setBalance] = useState<number | null>(null);
+  const [onChainBalances, setOnChainBalances] = useState<StellarBalance[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notifOpen, setNotifOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
@@ -59,9 +59,9 @@ export default function Navbar() {
 
   useEffect(() => {
     if (!user) return;
-    api.get('/wallets/balance')
-      .then((res) => setBalance(res.data.balance_mxne ?? 0))
-      .catch(() => setBalance(0));
+    api.get('/wallets/on-chain-balance')
+      .then((res) => setOnChainBalances(res.data.on_chain_balances ?? []))
+      .catch(() => setOnChainBalances([]));
   }, [user]);
 
   useEffect(() => {
@@ -173,7 +173,9 @@ export default function Navbar() {
             >
               <Wallet className="w-3.5 h-3.5" />
               <span className="text-xs font-medium tabular-nums">
-                {balance !== null ? formatMXN(balance) : '···'}
+                {onChainBalances.length > 0
+                  ? `${parseFloat(onChainBalances[0].balance).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} ${onChainBalances[0].asset_code || 'XLM'}`
+                  : '0.00 XLM'}
               </span>
             </Link>
 
@@ -321,8 +323,10 @@ export default function Navbar() {
               <div>
                 <p className="text-white text-sm font-medium">{user.username}</p>
                 <p className="text-white/35 text-xs capitalize">{user.role}</p>
-                {balance !== null && (
-                  <p className="text-[#60b8f0] text-xs font-medium tabular-nums">{formatMXN(balance)}</p>
+                {onChainBalances.length > 0 && (
+                  <p className="text-[#60b8f0] text-xs font-medium tabular-nums">
+                    {parseFloat(onChainBalances[0].balance).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 })} {onChainBalances[0].asset_code || 'XLM'}
+                  </p>
                 )}
               </div>
               <button

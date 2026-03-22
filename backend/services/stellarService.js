@@ -135,6 +135,74 @@ async function refundEventFunds(eventId, recruiterAddress, adminSecret) {
     return { status: 'mock_success', tx_hash: 'mock_refund_tx_hash' };
 }
 
+// ==========================================
+// Horizon API — On-chain Balance Queries
+// ==========================================
+
+const HORIZON_URL = process.env.NETWORK === 'mainnet'
+  ? 'https://horizon.stellar.org'
+  : 'https://horizon-testnet.stellar.org';
+
+/**
+ * Fetches the on-chain balances for a Stellar account via the Horizon REST API.
+ *
+ * @param {string} stellarAddress - Public key (G…) of the account.
+ * @returns {Promise<Array<{ asset_type: string, asset_code: string, asset_issuer?: string, balance: string }>>}
+ *          Returns [] if the account does not exist on the network.
+ */
+async function getAccountBalances(stellarAddress) {
+  try {
+    const res = await fetch(`${HORIZON_URL}/accounts/${stellarAddress}`);
+
+    if (res.status === 404) {
+      // Account not funded / doesn't exist on-chain yet
+      return [];
+    }
+    if (!res.ok) {
+      throw new Error(`Horizon responded with ${res.status}`);
+    }
+
+    const data = await res.json();
+
+    return (data.balances || []).map((b) => ({
+      asset_type: b.asset_type,
+      asset_code: b.asset_type === 'native' ? 'XLM' : b.asset_code,
+      asset_issuer: b.asset_issuer,
+      balance: b.balance,
+    }));
+  } catch (err) {
+    console.error('stellarService.getAccountBalances error:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Checks whether a Stellar account exists (has been funded) on the network.
+ */
+async function accountExists(stellarAddress) {
+  try {
+    const res = await fetch(`${HORIZON_URL}/accounts/${stellarAddress}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Funds a testnet account using the Stellar Friendbot.
+ * Only works on testnet.
+ */
+async function fundTestnetAccount(stellarAddress) {
+  if (process.env.NETWORK === 'mainnet') return false;
+  try {
+    const res = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(stellarAddress)}`);
+    return res.ok;
+  } catch (err) {
+    console.error('stellarService.fundTestnetAccount error:', err.message);
+    return false;
+  }
+}
+
 module.exports = {
     submitContractCall,
     distributeEventPrize,
@@ -143,5 +211,8 @@ module.exports = {
     recordReputationOnChain,
     createStellarWallet,
     verifySignature,
-    refundEventFunds
+    refundEventFunds,
+    getAccountBalances,
+    accountExists,
+    fundTestnetAccount,
 };

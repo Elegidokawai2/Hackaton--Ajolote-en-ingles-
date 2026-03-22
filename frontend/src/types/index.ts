@@ -143,11 +143,19 @@ export interface Message {
 }
 
 // ── Wallet ──
+export interface StellarBalance {
+  asset_type: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  balance: string;
+}
+
 export interface Wallet {
   _id: string;
   user_id: string;
   stellar_address: string;
   balance_mxne: number;
+  on_chain_balances?: StellarBalance[];
   created_at: string;
   updated_at: string;
 }

@@ -124,10 +124,21 @@ export default function DashboardPage() {
                 >
                   <div className="flex items-center gap-1.5 justify-end mb-1">
                     <Wallet className="w-3.5 h-3.5" style={{ color: 'var(--text-3)' }} />
-                    <p className="text-[10.5px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Saldo</p>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-3)' }}>Saldo on-chain</p>
                   </div>
-                  <p className="text-3xl font-bold text-white tabular-nums">{formatMXN(wallet?.balance_mxne || 0)}</p>
-                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>MXNe · Stellar</p>
+                  {wallet?.on_chain_balances && wallet.on_chain_balances.length > 0 ? (
+                    <div>
+                      {wallet.on_chain_balances.slice(0, 2).map((b, i) => (
+                        <p key={i} className="text-2xl font-bold text-white tabular-nums">
+                          {parseFloat(b.balance).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
+                          <span className="text-sm ml-1 font-semibold text-[#60b8f0]">{b.asset_code || b.asset_type}</span>
+                        </p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-3xl font-bold text-white tabular-nums">0.00</p>
+                  )}
+                  <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-3)' }}>Stellar Network</p>
                 </div>
               </div>
             </div>
