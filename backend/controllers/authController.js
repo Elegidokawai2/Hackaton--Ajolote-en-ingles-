@@ -3,97 +3,94 @@ const FreelancerProfile = require('../models/FreelancerProfile');
 const RecruiterProfile = require('../models/RecruiterProfile');
 const Session = require('../models/Session');
 const { Wallet } = require('../models/Wallet');
-const { Reputation } = require('../models/Reputation');
-const { createStellarWallet, verifySignature } = require('../services/stellarService');
+const { Keypair } = require('@stellar/stellar-sdk');
+const { registerUser, isActiveByWallet } = require('../contracts');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
+/**
+ * POST /auth/register
+ * Modelo custodial: el servidor genera la wallet Stellar y la registra on-chain.
+ */
 const register = async (req, res) => {
   try {
     const { email, password, username, role, ...profileData } = req.body;
-    
-    // Create User
-    const newUser = new User({ email, password_hash: password, username, role });
+
+    if (!email || !password || !role) {
+      return res.status(400).json({ error: 'email, password y role son requeridos.' });
+    }
+
+    // Validar que el email no exista
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ error: 'Este email ya está registrado.' });
+    }
+
+    // Generar keypair Stellar custodial
+    const keypair = Keypair.random();
+    const stellarPublicKey = keypair.publicKey();
+    const encryptedSecret = keypair.secret(); // En producción: cifrar con clave maestra
+
+    // Registrar identidad on-chain en WalletRegistry
+    const adminKeypair = Keypair.fromSecret(process.env.ADMIN_SECRET);
+    try {
+      await registerUser(adminKeypair, stellarPublicKey, email, role);
+    } catch (contractErr) {
+      console.error('Error registrando en WalletRegistry:', contractErr.message);
+      return res.status(500).json({ error: 'Error registrando identidad on-chain.' });
+    }
+
+    // Crear usuario en DB
+    const newUser = new User({
+      email,
+      password_hash: password,
+      username: username || email.split('@')[0],
+      role: role.toLowerCase(),
+      stellar_public_key: stellarPublicKey,
+    });
     await newUser.save();
 
-    // Create Profile based on role
-    if (role === 'freelancer') {
-      const profile = new FreelancerProfile({
-        user_id: newUser._id,
-        title: profileData.title || 'New Freelancer',
-        description: profileData.description || 'Ready for work',
-        experience_level: profileData.experience_level || 'junior'
-      });
-      await profile.save();
-    } else if (role === 'recruiter') {
-      const profile = new RecruiterProfile({
-        user_id: newUser._id,
-        company_name: profileData.company_name || 'My Company'
-      });
-      await profile.save();
-    }
-
-    res.status(201).json({ message: "User has been created.", user_id: newUser._id });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-/**
- * Register a user with a Stellar wallet address.
- * Creates User + Profile + Wallet + Reputation(score: 0).
- */
-const registerWithWallet = async (req, res) => {
-  try {
-    const { stellar_public_key, username, role, ...profileData } = req.body;
-
-    if (!stellar_public_key || !username || !role) {
-      return res.status(400).json({ message: "stellar_public_key, username, and role are required." });
-    }
-
-    // Check if wallet already registered
-    const existingUser = await User.findOne({ stellar_public_key });
-    if (existingUser) {
-      return res.status(400).json({ message: "This wallet is already registered." });
-    }
-
-    // Create User (no password needed for wallet auth)
-    const newUser = new User({ stellar_public_key, username, role });
-    await newUser.save();
-
-    // Create Profile based on role
-    if (role === 'freelancer') {
+    // Crear perfil según rol
+    if (role.toLowerCase() === 'freelancer') {
       const profile = new FreelancerProfile({
         user_id: newUser._id,
         title: profileData.title || 'New Freelancer',
         description: profileData.description || 'Ready for work',
         skills: profileData.skills || [],
-        experience_level: profileData.experience_level || 'junior'
+        experience_level: profileData.experience_level || 'junior',
       });
       await profile.save();
-    } else if (role === 'recruiter') {
+    } else if (role.toLowerCase() === 'recruiter') {
       const profile = new RecruiterProfile({
         user_id: newUser._id,
-        company_name: profileData.company_name || 'My Company',
-        company_description: profileData.company_description || ''
+        company_description: profileData.company_description || '',
       });
       await profile.save();
     }
 
-    // Create Wallet associated with this user
+    // Crear wallet en DB
     const wallet = new Wallet({
       user_id: newUser._id,
-      stellar_address: stellar_public_key
+      stellar_address: stellarPublicKey,
+      encrypted_secret: encryptedSecret,
     });
     await wallet.save();
 
-    // Initialize reputation at zero (will be created per-category on first interaction)
+    // Emitir JWT
+    const accessToken = jwt.sign(
+      { id: newUser._id, publicKey: stellarPublicKey, role: newUser.role },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '7d' }
+    );
 
     res.status(201).json({
-      message: "User registered with wallet successfully.",
-      user_id: newUser._id,
-      stellar_public_key: newUser.stellar_public_key
+      success: true,
+      data: {
+        token: accessToken,
+        publicKey: stellarPublicKey,
+        role: newUser.role,
+      },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -101,36 +98,49 @@ const registerWithWallet = async (req, res) => {
 };
 
 /**
- * Login using a Stellar wallet by verifying a cryptographic signature.
- * Client signs a challenge message with their private key.
+ * POST /auth/login
+ * Modelo custodial: email + password. Valida actividad on-chain antes de emitir JWT.
  */
-const loginWithWallet = async (req, res) => {
+const login = async (req, res) => {
   try {
-    const { stellar_public_key, message, signature } = req.body;
+    const { email, password } = req.body;
 
-    if (!stellar_public_key) {
-      return res.status(400).json({ message: "stellar_public_key is required." });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'email y password son requeridos.' });
     }
 
-    const user = await User.findOne({ stellar_public_key });
-    if (!user) return res.status(404).json({ message: "Wallet not registered!" });
+    const user = await User.findOne({ email });
+    if (!user) return res.status(401).json({ error: 'Credenciales inválidas.' });
+
+    const isCorrect = await bcrypt.compare(password, user.password_hash);
+    if (!isCorrect) return res.status(401).json({ error: 'Credenciales inválidas.' });
 
     if (user.status !== 'active') {
-      return res.status(403).json({ message: `Account is ${user.status}` });
+      return res.status(403).json({ error: `Cuenta ${user.status}.` });
     }
 
-    // Verify cryptographic signature (if provided)
-    if (message && signature) {
-      const isValid = verifySignature(stellar_public_key, message, signature);
-      if (!isValid) {
-        return res.status(401).json({ message: "Invalid signature!" });
+    // Verificar actividad on-chain
+    if (user.stellar_public_key) {
+      try {
+        const platformPublicKey = Keypair.fromSecret(
+          process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET
+        ).publicKey();
+        const isActive = await isActiveByWallet(platformPublicKey, user.stellar_public_key);
+        if (!isActive) {
+          return res.status(403).json({ error: 'Wallet desactivada on-chain.' });
+        }
+      } catch (contractErr) {
+        console.error('Error validando actividad on-chain:', contractErr.message);
+        // En desarrollo se permite continuar; en producción descomentar el return
+        // return res.status(500).json({ error: 'Error validando identidad on-chain.' });
       }
     }
 
+    // Emitir JWT
     const accessToken = jwt.sign(
-      { id: user._id, role: user.role },
+      { id: user._id, publicKey: user.stellar_public_key, role: user.role },
       process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: "7d" }
+      { expiresIn: '7d' }
     );
 
     const refreshTokenString = crypto.randomBytes(40).toString('hex');
@@ -142,7 +152,7 @@ const loginWithWallet = async (req, res) => {
       refresh_token: refreshTokenString,
       user_agent: req.headers['user-agent'],
       ip_address: req.ip,
-      expires_at: expiresAt
+      expires_at: expiresAt,
     });
     await session.save();
 
@@ -152,101 +162,60 @@ const loginWithWallet = async (req, res) => {
     const { password_hash, ...info } = user._doc;
 
     res
-      .cookie("accessToken", accessToken, { httpOnly: true, secure: process.env.NODE_ENV === "production" })
-      .cookie("refreshToken", refreshTokenString, { httpOnly: true, secure: process.env.NODE_ENV === "production" })
+      .cookie('accessToken', accessToken, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
+      .cookie('refreshToken', refreshTokenString, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
       .status(200)
-      .json(info);
+      .json({ success: true, data: { token: accessToken, user: info } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-const login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: "User not found!" });
-
-    const isCorrect = await bcrypt.compare(password, user.password_hash);
-    if (!isCorrect) return res.status(400).json({ message: "Wrong credentials!" });
-
-    // Ensure status is active
-    if (user.status !== 'active') return res.status(403).json({ message: `Account is ${user.status}` });
-
-    const accessToken = jwt.sign(
-      { id: user._id, role: user.role }, 
-      process.env.JWT_SECRET || 'fallback_secret', 
-      { expiresIn: "7d" } // Extended for hackathon
-    );
-
-    const refreshTokenString = crypto.randomBytes(40).toString('hex');
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
-
-    const session = new Session({
-      user_id: user._id,
-      refresh_token: refreshTokenString,
-      user_agent: req.headers['user-agent'],
-      ip_address: req.ip,
-      expires_at: expiresAt
-    });
-    await session.save();
-
-    // Update last_login
-    user.last_login = new Date();
-    await user.save();
-
-    const { password_hash, ...info } = user._doc;
-
-    res
-      .cookie("accessToken", accessToken, { httpOnly: true, secure: process.env.NODE_ENV === "production" })
-      .cookie("refreshToken", refreshTokenString, { httpOnly: true, secure: process.env.NODE_ENV === "production" })
-      .status(200)
-      .json(info);
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
+/**
+ * POST /auth/logout
+ */
 const logout = async (req, res) => {
   try {
     const refreshToken = req.cookies.refreshToken;
     if (refreshToken) {
       await Session.deleteOne({ refresh_token: refreshToken });
     }
-  } catch(err) {
+  } catch (err) {
     console.error(err);
   }
-  
+
   res
-    .clearCookie("accessToken", { sameSite: "none", secure: true })
-    .clearCookie("refreshToken", { sameSite: "none", secure: true })
+    .clearCookie('accessToken', { sameSite: 'none', secure: true })
+    .clearCookie('refreshToken', { sameSite: 'none', secure: true })
     .status(200)
-    .json({ message: "User has been logged out." });
+    .json({ success: true, data: { message: 'Sesión cerrada.' } });
 };
 
-// Simplified refresh token endpoint
+/**
+ * POST /auth/refresh
+ */
 const refresh = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken) return res.status(401).json({ message: "Not authenticated" });
+  if (!refreshToken) return res.status(401).json({ error: 'No autenticado.' });
 
   const session = await Session.findOne({ refresh_token: refreshToken });
   if (!session || session.expires_at < new Date()) {
-    return res.status(403).json({ message: "Invalid or expired refresh token" });
+    return res.status(403).json({ error: 'Token inválido o expirado.' });
   }
 
   const user = await User.findById(session.user_id);
-  if (!user) return res.status(403).json({ message: "User not found" });
+  if (!user) return res.status(403).json({ error: 'Usuario no encontrado.' });
 
   const accessToken = jwt.sign(
-    { id: user._id, role: user.role }, 
-    process.env.JWT_SECRET || 'fallback_secret', 
-    { expiresIn: "7d" }
+    { id: user._id, publicKey: user.stellar_public_key, role: user.role },
+    process.env.JWT_SECRET || 'fallback_secret',
+    { expiresIn: '7d' }
   );
 
-  res.cookie("accessToken", accessToken, { httpOnly: true, secure: process.env.NODE_ENV === "production" })
-     .status(200).json({ message: "Token refreshed" });
+  res
+    .cookie('accessToken', accessToken, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
+    .status(200)
+    .json({ success: true, data: { message: 'Token renovado.' } });
 };
 
-module.exports = { register, registerWithWallet, login, loginWithWallet, logout, refresh };
+module.exports = { register, login, logout, refresh };

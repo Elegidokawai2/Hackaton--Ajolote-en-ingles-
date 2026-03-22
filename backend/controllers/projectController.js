@@ -1,290 +1,296 @@
 const { Project, ProjectDelivery, ProjectStatusLog } = require('../models/Project');
 const { Wallet, Transaction, Escrow } = require('../models/Wallet');
 const { Reputation, ReputationLog } = require('../models/Reputation');
-const { lockProjectFunds, releaseProjectFunds, recordReputationOnChain } = require('../services/stellarService');
+const User = require('../models/User');
+const { Keypair } = require('@stellar/stellar-sdk');
+const crypto = require('crypto');
+const contracts = require('../contracts');
 const { createNotification } = require('../services/notificationService');
 
+/**
+ * POST /projects
+ */
 const createProject = async (req, res) => {
   try {
-    if (req.role !== 'recruiter' && req.role !== 'freelancer') {
-        return res.status(403).json({ message: "Invalid role!" });
+    if (req.role !== 'recruiter' && req.role !== 'admin') {
+      return res.status(403).json({ error: 'Solo reclutadores pueden crear proyectos.' });
     }
 
-    const { freelancer_id, recruiter_id, category_id, title, description, amount, guarantee, deadline } = req.body;
+    const { freelancerPublicKey, freelancer_id, recruiter_id, category_id, category, title, description, amount, guarantee, deadline } = req.body;
 
-    // Validate funds: check if recruiter has enough balance
     const funderId = recruiter_id || req.userId;
     const wallet = await Wallet.findOne({ user_id: funderId });
-    if (!wallet) return res.status(400).json({ message: "Wallet not found. Please deposit funds first." });
+    if (!wallet) return res.status(400).json({ error: 'Wallet no encontrada.' });
 
-    if (wallet.balance_mxne < amount) {
+    const totalRequired = (amount || 0) + (guarantee || 0);
+    if (wallet.balance_mxne < totalRequired) {
       return res.status(400).json({
-        message: "Insufficient funds!",
-        required: amount,
-        available: wallet.balance_mxne
+        error: 'Fondos insuficientes.',
+        required: totalRequired,
+        available: wallet.balance_mxne,
       });
     }
 
+    // Resolver freelancer: por publicKey o por _id
+    let resolvedFreelancerId = freelancer_id;
+    let freelancerPK = freelancerPublicKey;
+    if (freelancerPublicKey && !freelancer_id) {
+      const freelancerUser = await User.findOne({ stellar_public_key: freelancerPublicKey });
+      if (freelancerUser) resolvedFreelancerId = freelancerUser._id;
+    }
+    if (freelancer_id && !freelancerPublicKey) {
+      const freelancerUser = await User.findById(freelancer_id);
+      if (freelancerUser) freelancerPK = freelancerUser.stellar_public_key;
+    }
+
+    // Llamar al contrato on-chain
+    let onChainProjectId = null;
+    try {
+      const recruiterKeypair = Keypair.fromSecret(wallet.encrypted_secret);
+      onChainProjectId = await contracts.createProject(
+        recruiterKeypair,
+        freelancerPK,
+        amount,
+        guarantee || 0,
+        deadline,
+        category || 'general'
+      );
+    } catch (contractErr) {
+      console.error('Error on-chain createProject:', contractErr.message);
+      return res.status(500).json({ error: 'Error creando proyecto on-chain: ' + contractErr.message });
+    }
+
+    // Guardar en DB
     const newProject = new Project({
-      freelancer_id,
-      recruiter_id: recruiter_id || req.userId,
+      freelancer_id: resolvedFreelancerId,
+      recruiter_id: funderId,
       category_id,
       title,
       description,
       amount,
       guarantee,
-      deadline
+      deadline,
+      on_chain_id: onChainProjectId,
     });
 
     const savedProject = await newProject.save();
 
-    // Deduct funds and create escrow
-    wallet.balance_mxne -= amount;
+    wallet.balance_mxne -= totalRequired;
     await wallet.save();
 
     const escrow = new Escrow({
       funder_id: funderId,
       type: 'project',
       reference_id: savedProject._id,
-      amount,
-      status: 'locked'
+      amount: totalRequired,
+      status: 'locked',
     });
     await escrow.save();
 
-    // Create escrow transaction
     const transaction = new Transaction({
       user_id: funderId,
       type: 'escrow',
-      amount_mxn: amount,
-      amount_mxne: amount,
+      amount_mxn: totalRequired,
+      amount_mxne: totalRequired,
       status: 'completed',
-      stellar_tx_hash: `mock_project_escrow_${Date.now()}`
+      stellar_tx_hash: `project_escrow_${onChainProjectId || Date.now()}`,
     });
     await transaction.save();
 
     const log = new ProjectStatusLog({
       project_id: savedProject._id,
       status: 'proposed',
-      changed_by: req.userId
+      changed_by: req.userId,
     });
     await log.save();
 
-    // Call Soroban mock
-    await lockProjectFunds(savedProject._id, amount, 'funder_secret');
-
-    // Notify freelancer about new proposal
-    if (freelancer_id) {
-      await createNotification(
-        freelancer_id,
-        'project',
-        'Nueva propuesta de proyecto',
-        `Has recibido una propuesta para el proyecto "${title}".`,
-        savedProject._id
-      );
+    if (resolvedFreelancerId) {
+      await createNotification(resolvedFreelancerId, 'project', 'Nueva propuesta de proyecto',
+        `Tienes una nueva propuesta de proyecto: "${title}".`, savedProject._id);
     }
 
-    res.status(201).json(savedProject);
-  } catch(err) {
+    res.status(201).json({ success: true, data: { projectId: onChainProjectId, project: savedProject } });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * GET /projects
+ */
 const getProjects = async (req, res) => {
-    try {
-        const query = {};
-        if (req.role === 'freelancer') query.freelancer_id = req.userId;
-        else if (req.role === 'recruiter') query.recruiter_id = req.userId;
+  try {
+    const query = {};
+    if (req.role === 'freelancer') query.freelancer_id = req.userId;
+    else if (req.role === 'recruiter') query.recruiter_id = req.userId;
+    if (req.query.status) query.status = req.query.status;
 
-        if (req.query.status) query.status = req.query.status;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
-        const projects = await Project.find(query).populate('freelancer_id').populate('recruiter_id');
-        res.status(200).json(projects);
-    } catch(err) {
-        res.status(500).json({ error: err.message });
-    }
-};
+    const projects = await Project.find(query)
+      .populate('freelancer_id', 'username stellar_public_key')
+      .populate('recruiter_id', 'username stellar_public_key')
+      .sort({ created_at: -1 })
+      .skip(skip)
+      .limit(limit);
 
-const getProjectById = async (req, res) => {
-    try {
-        const project = await Project.findById(req.params.id);
-        if(!project) return res.status(404).json({ message: "Project not found!" });
-        res.status(200).json(project);
-    } catch(err) {
-        res.status(500).json({ error: err.message });
-    }
-};
+    const total = await Project.countDocuments(query);
 
-const updateProjectStatus = async (req, res) => {
-    try {
-        const project = await Project.findById(req.params.id);
-        if(!project) return res.status(404).json({ message: "Project not found!" });
-
-        // Authorization simplified for MVP
-        if(project.freelancer_id.toString() !== req.userId && project.recruiter_id.toString() !== req.userId) {
-            return res.status(403).json({ message: "Not authorized!" });
-        }
-
-        project.status = req.body.status;
-        await project.save();
-
-        const log = new ProjectStatusLog({
-            project_id: project._id,
-            status: req.body.status,
-            changed_by: req.userId
-        });
-        await log.save();
-
-        res.status(200).json(project);
-    } catch(err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-const deliverProject = async (req, res) => {
-    try {
-        const project = await Project.findById(req.params.id);
-        if(!project) return res.status(404).json({ message: "Project not found!" });
-
-        if(project.freelancer_id.toString() !== req.userId) {
-            return res.status(403).json({ message: "Only the assigned freelancer can deliver!" });
-        }
-
-        const delivery = new ProjectDelivery({
-            project_id: project._id,
-            file_url: req.body.file_url,
-            description: req.body.description
-        });
-        await delivery.save();
-
-        project.status = 'review';
-        await project.save();
-
-        // Notify recruiter about delivery
-        await createNotification(
-          project.recruiter_id,
-          'project',
-          'Entrega recibida',
-          `El freelancer ha entregado su trabajo para el proyecto "${project.title}".`,
-          project._id
-        );
-
-        res.status(201).json(delivery);
-    } catch(err) {
-        res.status(500).json({ error: err.message });
-    }
+    res.status(200).json({
+      success: true,
+      data: projects,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 /**
- * Freelancer accepts a proposed project contract.
+ * GET /projects/:id
+ */
+const getProjectById = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id)
+      .populate('freelancer_id', 'username stellar_public_key')
+      .populate('recruiter_id', 'username stellar_public_key');
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+
+    let onChainData = null;
+    if (project.on_chain_id) {
+      try {
+        const platformPublicKey = Keypair.fromSecret(
+          process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET
+        ).publicKey();
+        onChainData = await contracts.getProject(platformPublicKey, project.on_chain_id);
+      } catch { /* ignore */ }
+    }
+
+    res.status(200).json({ success: true, data: { project, onChainData } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * POST /projects/:id/accept
  */
 const acceptProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: "Project not found!" });
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
 
     if (project.freelancer_id.toString() !== req.userId) {
-      return res.status(403).json({ message: "Only the assigned freelancer can accept!" });
+      return res.status(403).json({ error: 'Solo el freelancer asignado puede aceptar.' });
     }
 
     if (project.status !== 'proposed') {
-      return res.status(400).json({ message: "Project is not in proposed state." });
+      return res.status(400).json({ error: 'El proyecto no está en estado propuesto.' });
+    }
+
+    // Contrato on-chain
+    if (project.on_chain_id) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const freelancerKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.acceptProject(freelancerKeypair, project.on_chain_id);
+      } catch (contractErr) {
+        return res.status(500).json({ error: 'Error on-chain: ' + contractErr.message });
+      }
     }
 
     project.status = 'active';
     await project.save();
 
-    const log = new ProjectStatusLog({
-      project_id: project._id,
-      status: 'active',
-      changed_by: req.userId
-    });
+    const log = new ProjectStatusLog({ project_id: project._id, status: 'active', changed_by: req.userId });
     await log.save();
 
-    // Notify recruiter
-    await createNotification(
-      project.recruiter_id,
-      'project',
-      'Proyecto aceptado',
-      `El freelancer ha aceptado el proyecto "${project.title}".`,
-      project._id
-    );
+    await createNotification(project.recruiter_id, 'project', 'Proyecto aceptado',
+      `El freelancer aceptó el proyecto "${project.title}".`, project._id);
 
-    res.status(200).json({ message: "Project accepted!", project });
+    res.status(200).json({ success: true, data: { message: 'Proyecto aceptado.', project } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Freelancer rejects a proposed project contract. Funds are refunded.
+ * POST /projects/:id/deliver
  */
-const rejectProject = async (req, res) => {
+const deliverProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: "Project not found!" });
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
 
     if (project.freelancer_id.toString() !== req.userId) {
-      return res.status(403).json({ message: "Only the assigned freelancer can reject!" });
+      return res.status(403).json({ error: 'Solo el freelancer asignado puede entregar.' });
     }
 
-    if (project.status !== 'proposed') {
-      return res.status(400).json({ message: "Project is not in proposed state." });
+    const { deliveryContent, file_url, description } = req.body;
+    const content = deliveryContent || file_url || '';
+
+    // Enviar hash on-chain
+    let deliveryHash = null;
+    if (project.on_chain_id && content) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const freelancerKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        deliveryHash = await contracts.submitDelivery(freelancerKeypair, project.on_chain_id, content);
+      } catch (contractErr) {
+        return res.status(500).json({ error: 'Error on-chain: ' + contractErr.message });
+      }
     }
 
-    project.status = 'rejected';
+    const delivery = new ProjectDelivery({
+      project_id: project._id,
+      file_url: file_url || content,
+      description: description || '',
+      delivery_hash: deliveryHash,
+    });
+    await delivery.save();
+
+    project.status = 'review';
     await project.save();
 
-    // Refund escrow to recruiter
-    const escrow = await Escrow.findOne({ type: 'project', reference_id: project._id, status: 'locked' });
-    if (escrow) {
-      const recruiterWallet = await Wallet.findOne({ user_id: project.recruiter_id });
-      if (recruiterWallet) {
-        recruiterWallet.balance_mxne += escrow.amount;
-        await recruiterWallet.save();
-      }
-      escrow.status = 'refunded';
-      await escrow.save();
-    }
+    await createNotification(project.recruiter_id, 'project', 'Entrega recibida',
+      `El freelancer entregó su trabajo para "${project.title}".`, project._id);
 
-    const log = new ProjectStatusLog({
-      project_id: project._id,
-      status: 'rejected',
-      changed_by: req.userId
-    });
-    await log.save();
-
-    // Notify recruiter
-    await createNotification(
-      project.recruiter_id,
-      'project',
-      'Proyecto rechazado',
-      `El freelancer ha rechazado el proyecto "${project.title}". Los fondos han sido reembolsados.`,
-      project._id
-    );
-
-    res.status(200).json({ message: "Project rejected and funds refunded.", project });
+    res.status(201).json({ success: true, data: { delivery, deliveryHash } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Recruiter approves delivery, releases escrow to freelancer, updates reputation.
+ * POST /projects/:id/approve
  */
 const approveDelivery = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: "Project not found!" });
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
 
     if (project.recruiter_id.toString() !== req.userId) {
-      return res.status(403).json({ message: "Only the recruiter can approve delivery!" });
+      return res.status(403).json({ error: 'Solo el reclutador puede aprobar.' });
     }
 
     if (project.status !== 'review') {
-      return res.status(400).json({ message: "Project is not in review state." });
+      return res.status(400).json({ error: 'El proyecto no está en revisión.' });
     }
 
-    // Release escrow to freelancer
+    // Contrato on-chain
+    if (project.on_chain_id) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const recruiterKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.approveDelivery(recruiterKeypair, project.on_chain_id);
+      } catch (contractErr) {
+        return res.status(500).json({ error: 'Error on-chain: ' + contractErr.message });
+      }
+    }
+
+    // Liberar escrow
     const escrow = await Escrow.findOne({ type: 'project', reference_id: project._id, status: 'locked' });
     if (escrow) {
       const freelancerWallet = await Wallet.findOne({ user_id: project.freelancer_id });
@@ -292,14 +298,13 @@ const approveDelivery = async (req, res) => {
         freelancerWallet.balance_mxne += escrow.amount;
         await freelancerWallet.save();
 
-        // Create payment transaction
         const payTx = new Transaction({
           user_id: project.freelancer_id,
           type: 'release',
           amount_mxn: escrow.amount,
           amount_mxne: escrow.amount,
           status: 'completed',
-          stellar_tx_hash: `mock_project_release_${Date.now()}`
+          stellar_tx_hash: `project_release_${project.on_chain_id || Date.now()}`,
         });
         await payTx.save();
       }
@@ -311,100 +316,152 @@ const approveDelivery = async (req, res) => {
     project.status = 'completed';
     await project.save();
 
-    const log = new ProjectStatusLog({
-      project_id: project._id,
-      status: 'completed',
-      changed_by: req.userId
-    });
+    const log = new ProjectStatusLog({ project_id: project._id, status: 'completed', changed_by: req.userId });
     await log.save();
 
-    // Update reputation for freelancer: +5 for project completion
-    if (project.category_id) {
-      let rep = await Reputation.findOne({ user_id: project.freelancer_id, category_id: project.category_id });
-      if (!rep) {
-        rep = new Reputation({ user_id: project.freelancer_id, category_id: project.category_id, score: 0 });
-      }
-      rep.score += 5;
-      if (rep.score >= 100) rep.level = 'diamond';
-      else if (rep.score >= 50) rep.level = 'gold';
-      else if (rep.score >= 20) rep.level = 'silver';
-      else rep.level = 'bronze';
-      await rep.save();
+    await createNotification(project.freelancer_id, 'project', 'Pago liberado',
+      `Tu trabajo en "${project.title}" fue aprobado. Fondos liberados.`, project._id);
 
-      const repLog = new ReputationLog({
-        user_id: project.freelancer_id,
-        category_id: project.category_id,
-        delta: 5,
-        reason: 'project_completed',
-        source_type: 'project',
-        source_id: project._id,
-        soroban_tx_hash: `mock_rep_project_${Date.now()}`
-      });
-      await repLog.save();
-
-      await recordReputationOnChain(project.freelancer_id, project.category_id, 5, 'admin_secret');
-    }
-
-    // Soroban mock
-    await releaseProjectFunds(project._id, project.freelancer_id, 'admin_secret');
-
-    // Notify freelancer
-    await createNotification(
-      project.freelancer_id,
-      'project',
-      'Pago liberado',
-      `Tu trabajo en "${project.title}" ha sido aprobado. Se han liberado ${project.amount} MXNe.`,
-      project._id
-    );
-
-    // Notify about payment
-    await createNotification(
-      project.freelancer_id,
-      'payment',
-      'Pago recibido',
-      `Has recibido ${project.amount} MXNe por el proyecto "${project.title}".`,
-      project._id
-    );
-
-    res.status(200).json({ message: "Delivery approved, payment released!", project });
+    res.status(200).json({ success: true, data: { message: 'Entrega aprobada, pago liberado.', project } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Refund project: recruiter cancels and gets funds back.
+ * POST /projects/:id/correction
  */
-const refundProject = async (req, res) => {
+const requestCorrection = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    if (!project) return res.status(404).json({ message: "Project not found!" });
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
 
-    if (project.recruiter_id.toString() !== req.userId && req.role !== 'admin') {
-      return res.status(403).json({ message: "Only the recruiter or admin can request a refund!" });
+    if (project.recruiter_id.toString() !== req.userId) {
+      return res.status(403).json({ error: 'Solo el reclutador puede solicitar correcciones.' });
     }
 
-    if (['completed', 'disputed'].includes(project.status)) {
-      return res.status(400).json({ message: "Cannot refund a completed or disputed project." });
+    // Contrato on-chain
+    if (project.on_chain_id) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const recruiterKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.requestCorrection(recruiterKeypair, project.on_chain_id);
+      } catch (contractErr) {
+        return res.status(500).json({ error: 'Error on-chain: ' + contractErr.message });
+      }
     }
 
-    // Refund escrow
+    project.status = 'correcting';
+    await project.save();
+
+    const log = new ProjectStatusLog({ project_id: project._id, status: 'correcting', changed_by: req.userId });
+    await log.save();
+
+    await createNotification(project.freelancer_id, 'project', 'Correcciones solicitadas',
+      `El reclutador solicitó correcciones en "${project.title}".`, project._id);
+
+    res.status(200).json({ success: true, data: { message: 'Corrección solicitada.', project } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * POST /projects/:id/reject
+ */
+const rejectProject = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+
+    if (project.recruiter_id.toString() !== req.userId) {
+      return res.status(403).json({ error: 'Solo el reclutador puede rechazar.' });
+    }
+
+    // Contrato on-chain
+    if (project.on_chain_id) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const recruiterKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.rejectDelivery(recruiterKeypair, project.on_chain_id);
+      } catch (contractErr) {
+        return res.status(500).json({ error: 'Error on-chain: ' + contractErr.message });
+      }
+    }
+
+    project.status = 'disputed';
+    await project.save();
+
+    const log = new ProjectStatusLog({ project_id: project._id, status: 'disputed', changed_by: req.userId });
+    await log.save();
+
+    await createNotification(project.freelancer_id, 'project', 'Entrega rechazada',
+      `El reclutador rechazó la entrega de "${project.title}". Se abre disputa.`, project._id);
+
+    res.status(200).json({ success: true, data: { message: 'Entrega rechazada, disputa abierta.', project } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * POST /projects/:id/timeout-approve
+ * Auto-aprueba por timeout. Llamado internamente.
+ */
+const timeoutApprove = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+
+    if (project.on_chain_id) {
+      const platformKeypair = Keypair.fromSecret(process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET);
+      await contracts.timeoutApprove(platformKeypair, project.on_chain_id);
+    }
+
+    // Liberar escrow
+    const escrow = await Escrow.findOne({ type: 'project', reference_id: project._id, status: 'locked' });
+    if (escrow) {
+      const freelancerWallet = await Wallet.findOne({ user_id: project.freelancer_id });
+      if (freelancerWallet) {
+        freelancerWallet.balance_mxne += escrow.amount;
+        await freelancerWallet.save();
+      }
+      escrow.status = 'released';
+      await escrow.save();
+    }
+
+    project.status = 'completed';
+    await project.save();
+
+    await createNotification(project.freelancer_id, 'project', 'Proyecto auto-aprobado',
+      `"${project.title}" fue auto-aprobado por vencimiento. Fondos liberados.`, project._id);
+
+    res.status(200).json({ success: true, data: { message: 'Proyecto auto-aprobado por timeout.' } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * POST /projects/:id/timeout-refund
+ * Auto-reembolsa por timeout. Llamado internamente.
+ */
+const timeoutRefund = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+
+    if (project.on_chain_id) {
+      const platformKeypair = Keypair.fromSecret(process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET);
+      await contracts.timeoutRefund(platformKeypair, project.on_chain_id);
+    }
+
     const escrow = await Escrow.findOne({ type: 'project', reference_id: project._id, status: 'locked' });
     if (escrow) {
       const recruiterWallet = await Wallet.findOne({ user_id: project.recruiter_id });
       if (recruiterWallet) {
         recruiterWallet.balance_mxne += escrow.amount;
         await recruiterWallet.save();
-
-        const refundTx = new Transaction({
-          user_id: project.recruiter_id,
-          type: 'release',
-          amount_mxn: escrow.amount,
-          amount_mxne: escrow.amount,
-          status: 'completed',
-          stellar_tx_hash: `mock_project_refund_${Date.now()}`
-        });
-        await refundTx.save();
       }
       escrow.status = 'refunded';
       await escrow.save();
@@ -413,26 +470,49 @@ const refundProject = async (req, res) => {
     project.status = 'rejected';
     await project.save();
 
-    const log = new ProjectStatusLog({
-      project_id: project._id,
-      status: 'rejected',
-      changed_by: req.userId
-    });
-    await log.save();
+    await createNotification(project.recruiter_id, 'project', 'Proyecto reembolsado',
+      `"${project.title}" fue reembolsado por vencimiento.`, project._id);
 
-    // Notify freelancer
-    await createNotification(
-      project.freelancer_id,
-      'project',
-      'Proyecto cancelado',
-      `El proyecto "${project.title}" ha sido cancelado y los fondos reembolsados.`,
-      project._id
-    );
-
-    res.status(200).json({ message: "Project cancelled and funds refunded.", project });
+    res.status(200).json({ success: true, data: { message: 'Proyecto reembolsado por timeout.' } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-module.exports = { createProject, getProjects, getProjectById, updateProjectStatus, deliverProject, acceptProject, rejectProject, approveDelivery, refundProject };
+/**
+ * PUT /projects/:id/status — legacy endpoint
+ */
+const updateProjectStatus = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ error: 'Proyecto no encontrado.' });
+
+    if (project.freelancer_id.toString() !== req.userId && project.recruiter_id.toString() !== req.userId) {
+      return res.status(403).json({ error: 'No autorizado.' });
+    }
+
+    project.status = req.body.status;
+    await project.save();
+
+    const log = new ProjectStatusLog({ project_id: project._id, status: req.body.status, changed_by: req.userId });
+    await log.save();
+
+    res.status(200).json({ success: true, data: project });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+module.exports = {
+  createProject,
+  getProjects,
+  getProjectById,
+  updateProjectStatus,
+  acceptProject,
+  deliverProject,
+  approveDelivery,
+  requestCorrection,
+  rejectProject,
+  timeoutApprove,
+  timeoutRefund,
+};

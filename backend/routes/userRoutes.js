@@ -1,14 +1,12 @@
 const express = require('express');
-const { deleteUser, getUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking } = require('../controllers/userController');
+const { getUser, getWalletForUser, rotateWallet, getUserHistory, updateProfile, getRanking, deleteUser } = require('../controllers/userController');
 const { verifyToken } = require('../middleware/jwt');
-
 const router = express.Router();
-
-router.get('/search/freelancers', searchFreelancers);
 router.get('/ranking', getRanking);
-router.get('/:id', getUser);
-router.get('/:id/on-chain-profile', getOnChainProfile);
-router.put('/profile', verifyToken, updateProfile); // Update their own profile
-router.delete('/:id', verifyToken, deleteUser);
-
+router.get('/:publicKey', getUser);
+router.get('/:publicKey/wallet', verifyToken, getWalletForUser);
+router.post('/:publicKey/wallet/rotate', verifyToken, rotateWallet);
+router.get('/:publicKey/history', getUserHistory);
+router.patch('/:publicKey', verifyToken, updateProfile);
+router.delete('/:publicKey', verifyToken, deleteUser);
 module.exports = router;

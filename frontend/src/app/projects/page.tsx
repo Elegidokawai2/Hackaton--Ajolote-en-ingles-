@@ -27,7 +27,7 @@ export default function ProjectsPage() {
       try {
         const res = await api.get('/projects');
         setProjects(res.data);
-      } catch {}
+      } catch { }
       setLoading(false);
     };
     fetchProjects();
@@ -69,11 +69,10 @@ export default function ProjectsPage() {
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${
-                  tab === t.key
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${tab === t.key
                     ? 'bg-zinc-900 text-white'
                     : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200'
-                }`}
+                  }`}
               >
                 {t.label}
               </button>

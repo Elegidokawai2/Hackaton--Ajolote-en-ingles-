@@ -2,123 +2,200 @@ const { Event, EventParticipant, EventSubmission } = require('../models/Event');
 const { Wallet, Transaction, Escrow } = require('../models/Wallet');
 const { Reputation, ReputationLog } = require('../models/Reputation');
 const Category = require('../models/Category');
-const { distributeEventPrize, recordReputationOnChain } = require('../services/stellarService');
+const User = require('../models/User');
+const { Keypair } = require('@stellar/stellar-sdk');
+const crypto = require('crypto');
+const contracts = require('../contracts');
 const { createNotification } = require('../services/notificationService');
 
+/**
+ * POST /events
+ * El reclutador crea un nuevo evento. El premio queda en escrow on-chain en MXNe.
+ */
 const createEvent = async (req, res) => {
   try {
     if (req.role !== 'recruiter' && req.role !== 'admin') {
-      return res.status(403).json({ message: "Only recruiters can create events!" });
+      return res.status(403).json({ error: 'Solo reclutadores pueden crear eventos.' });
     }
 
-    const { title, description, rules, category_id, prize_amount, max_winners, deadline_submission, deadline_selection } = req.body;
+    const { title, description, rules, prize, category, deadlineSubmit, deadlineSelect, category_id, prize_amount, max_winners, deadline_submission, deadline_selection } = req.body;
 
-    // Validate funds: check if recruiter has enough balance
+    // Soportar ambos formatos (v1 legacy y v2)
+    const eventPrize = prize || prize_amount;
+    const eventCategory = category || null;
+    const eventCategoryId = category_id || null;
+    const eventDeadlineSubmit = deadlineSubmit || deadline_submission;
+    const eventDeadlineSelect = deadlineSelect || deadline_selection;
+
+    // Validar fondos
     const wallet = await Wallet.findOne({ user_id: req.userId });
-    if (!wallet) return res.status(400).json({ message: "Wallet not found. Please deposit funds first." });
+    if (!wallet) return res.status(400).json({ error: 'Wallet no encontrada. Deposita fondos primero.' });
 
-    if (wallet.balance_mxne < prize_amount) {
+    if (wallet.balance_mxne < eventPrize) {
       return res.status(400).json({
-        message: "Insufficient funds!",
-        required: prize_amount,
-        available: wallet.balance_mxne
+        error: 'Fondos insuficientes.',
+        required: eventPrize,
+        available: wallet.balance_mxne,
       });
     }
 
+    // Llamar al contrato on-chain
+    let onChainEventId = null;
+    try {
+      const user = await User.findById(req.userId);
+      const walletDoc = await Wallet.findOne({ user_id: req.userId });
+      const recruiterKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+
+      onChainEventId = await contracts.createEvent(
+        recruiterKeypair,
+        eventPrize,
+        eventCategory || 'general',
+        eventDeadlineSubmit,
+        eventDeadlineSelect
+      );
+    } catch (contractErr) {
+      console.error('Error on-chain createEvent:', contractErr.message);
+      return res.status(500).json({ error: 'Error creando evento on-chain: ' + contractErr.message });
+    }
+
+    // Guardar en DB (off-chain)
     const newEvent = new Event({
       recruiter_id: req.userId,
       title,
       description,
       rules: rules || '',
-      category_id,
-      prize_amount,
+      category_id: eventCategoryId,
+      prize_amount: eventPrize,
       max_winners: max_winners || 1,
-      deadline_submission,
-      deadline_selection,
-      status: 'active'
+      deadline_submission: eventDeadlineSubmit,
+      deadline_selection: eventDeadlineSelect,
+      status: 'active',
+      on_chain_id: onChainEventId,
     });
 
     const savedEvent = await newEvent.save();
 
-    // Deduct funds from company wallet and create escrow
-    wallet.balance_mxne -= prize_amount;
+    // Deducir fondos y crear escrow en DB
+    wallet.balance_mxne -= eventPrize;
     await wallet.save();
 
     const escrow = new Escrow({
       funder_id: req.userId,
       type: 'event',
       reference_id: savedEvent._id,
-      amount: prize_amount,
-      status: 'locked'
+      amount: eventPrize,
+      status: 'locked',
     });
     await escrow.save();
 
-    // Create escrow transaction record
     const transaction = new Transaction({
       user_id: req.userId,
       type: 'escrow',
-      amount_mxn: prize_amount,
-      amount_mxne: prize_amount,
+      amount_mxn: eventPrize,
+      amount_mxne: eventPrize,
       status: 'completed',
-      stellar_tx_hash: `mock_event_escrow_${Date.now()}`
+      stellar_tx_hash: `event_escrow_${onChainEventId || Date.now()}`,
     });
     await transaction.save();
 
-    res.status(201).json(savedEvent);
+    res.status(201).json({ success: true, data: { eventId: onChainEventId, event: savedEvent } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * GET /events
+ */
 const getEvents = async (req, res) => {
   try {
-    // Filter logic (status, category, etc)
     const query = {};
     if (req.query.status) query.status = req.query.status;
     if (req.query.category_id) query.category_id = req.query.category_id;
 
-    const events = await Event.find(query).populate('recruiter_id', 'username email');
-    res.status(200).json(events);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    const events = await Event.find(query)
+      .populate('recruiter_id', 'username email stellar_public_key')
+      .sort({ created_at: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Event.countDocuments(query);
+
+    res.status(200).json({
+      success: true,
+      data: events,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * GET /events/:id
+ */
 const getEventById = async (req, res) => {
   try {
     const event = await Event.findById(req.params.id)
-      .populate('recruiter_id', 'username email')
+      .populate('recruiter_id', 'username email stellar_public_key')
       .populate('category_id');
-    if (!event) return res.status(404).json({ message: "Event not found!" });
+    if (!event) return res.status(404).json({ error: 'Evento no encontrado.' });
 
-    res.status(200).json(event);
+    // Enriquecer con estado on-chain si tiene on_chain_id
+    let onChainData = null;
+    if (event.on_chain_id) {
+      try {
+        const platformPublicKey = Keypair.fromSecret(
+          process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET
+        ).publicKey();
+        onChainData = await contracts.getEvent(platformPublicKey, event.on_chain_id);
+      } catch { /* ignore si falla la consulta on-chain */ }
+    }
+
+    res.status(200).json({ success: true, data: { event, onChainData } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * POST /events/:id/apply
+ */
 const applyToEvent = async (req, res) => {
   try {
     if (req.role !== 'freelancer') {
-      return res.status(403).json({ message: "Only freelancers can apply!" });
+      return res.status(403).json({ error: 'Solo freelancers pueden aplicar.' });
     }
 
     const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Event not found!" });
-    if (event.status !== 'active') return res.status(400).json({ message: "Event is not active." });
+    if (!event) return res.status(404).json({ error: 'Evento no encontrado.' });
+    if (event.status !== 'active') return res.status(400).json({ error: 'El evento no está activo.' });
 
-    // Check if already applied
     const existing = await EventParticipant.findOne({ event_id: req.params.id, freelancer_id: req.userId });
-    if (existing) return res.status(400).json({ message: "Already applied!" });
+    if (existing) return res.status(400).json({ error: 'Ya aplicaste a este evento.' });
+
+    // Llamar al contrato on-chain
+    if (event.on_chain_id) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const freelancerKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.applyToEvent(freelancerKeypair, event.on_chain_id);
+      } catch (contractErr) {
+        console.error('Error on-chain applyToEvent:', contractErr.message);
+        return res.status(500).json({ error: 'Error aplicando on-chain: ' + contractErr.message });
+      }
+    }
 
     const participant = new EventParticipant({
       event_id: req.params.id,
-      freelancer_id: req.userId
+      freelancer_id: req.userId,
     });
-
     await participant.save();
 
-    // Notify recruiter about new participant
     await createNotification(
       event.recruiter_id,
       'event',
@@ -127,70 +204,99 @@ const applyToEvent = async (req, res) => {
       event._id
     );
 
-    res.status(201).json(participant);
+    res.status(201).json({ success: true, data: participant });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * POST /events/:id/submit
+ */
 const submitWork = async (req, res) => {
   try {
     if (req.role !== 'freelancer') {
-        return res.status(403).json({ message: "Only freelancers can submit work!" });
+      return res.status(403).json({ error: 'Solo freelancers pueden enviar entregables.' });
     }
 
-    const { file_url, description } = req.body;
-    
-    // Verify participation
+    const { entryContent, file_url, description } = req.body;
+    const content = entryContent || file_url || description || '';
+
     const participant = await EventParticipant.findOne({ event_id: req.params.id, freelancer_id: req.userId });
-    if (!participant) return res.status(403).json({ message: "You have not applied to this event!" });
-    
+    if (!participant) return res.status(403).json({ error: 'No has aplicado a este evento.' });
+
+    const event = await Event.findById(req.params.id);
+
+    // Calcular SHA-256 y enviar on-chain
+    let entryHash = null;
+    if (event && event.on_chain_id && content) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const freelancerKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        entryHash = await contracts.submitEntry(freelancerKeypair, event.on_chain_id, content);
+      } catch (contractErr) {
+        console.error('Error on-chain submitEntry:', contractErr.message);
+        return res.status(500).json({ error: 'Error enviando entregable on-chain: ' + contractErr.message });
+      }
+    }
+
     const submission = new EventSubmission({
       event_id: req.params.id,
       freelancer_id: req.userId,
-      file_url,
-      description
+      file_url: file_url || content,
+      description: description || '',
+      entry_hash: entryHash,
     });
 
     participant.status = 'submitted';
     await participant.save();
     await submission.save();
 
-    // Notify recruiter about submission
-    const event = await Event.findById(req.params.id);
     if (event) {
       await createNotification(
         event.recruiter_id,
         'event',
         'Nuevo entregable',
-        `Un freelancer ha enviado su trabajo para el evento "${event.title}".`,
+        `Un freelancer ha enviado su trabajo para "${event.title}".`,
         event._id
       );
     }
 
-    res.status(201).json(submission);
+    res.status(201).json({ success: true, data: { submission, entryHash } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
+/**
+ * POST /events/:id/winners
+ */
 const selectWinner = async (req, res) => {
   try {
     const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: "Event not found!" });
+    if (!event) return res.status(404).json({ error: 'Evento no encontrado.' });
 
     if (event.recruiter_id.toString() !== req.userId) {
-      return res.status(403).json({ message: "Only the event creator can select a winner!" });
+      return res.status(403).json({ error: 'Solo el creador del evento puede seleccionar ganadores.' });
     }
 
-    const { submission_ids } = req.body; // Support multiple winners
-    const submissionIdList = submission_ids || [req.body.submission_id]; // Backward compatible
+    const { winners, submission_ids } = req.body;
 
-    if (!submissionIdList || submissionIdList.length === 0) {
-      return res.status(400).json({ message: "At least one submission_id is required." });
+    // Llamar al contrato on-chain si hay winners como public keys
+    if (event.on_chain_id && winners && winners.length > 0) {
+      try {
+        const walletDoc = await Wallet.findOne({ user_id: req.userId });
+        const recruiterKeypair = Keypair.fromSecret(walletDoc.encrypted_secret);
+        await contracts.selectWinners(recruiterKeypair, event.on_chain_id, winners);
+      } catch (contractErr) {
+        console.error('Error on-chain selectWinners:', contractErr.message);
+        return res.status(500).json({ error: 'Error seleccionando ganadores on-chain: ' + contractErr.message });
+      }
     }
 
-    const winners = [];
+    // Procesar en DB
+    const submissionIdList = submission_ids || [];
+    const winnerUserIds = [];
 
     for (const submissionId of submissionIdList) {
       const submission = await EventSubmission.findById(submissionId);
@@ -199,143 +305,114 @@ const selectWinner = async (req, res) => {
       submission.is_winner = true;
       await submission.save();
 
-      // Update participant status
       await EventParticipant.findOneAndUpdate(
-          { event_id: req.params.id, freelancer_id: submission.freelancer_id },
-          { status: 'winner' }
+        { event_id: req.params.id, freelancer_id: submission.freelancer_id },
+        { status: 'winner' }
       );
 
-      winners.push(submission.freelancer_id);
+      winnerUserIds.push(submission.freelancer_id);
     }
 
-    if (winners.length === 0) {
-      return res.status(400).json({ message: "No valid submissions found." });
-    }
-
-    // Distribute prize among winners
+    // Distribuir premio en DB
     const escrow = await Escrow.findOne({ type: 'event', reference_id: event._id, status: 'locked' });
-    if (escrow) {
-      const prizePerWinner = escrow.amount / winners.length;
+    if (escrow && winnerUserIds.length > 0) {
+      const commission = escrow.amount * 0.10;
+      const distributable = escrow.amount - commission;
+      const prizePerWinner = distributable / winnerUserIds.length;
 
-      for (const winnerId of winners) {
+      for (const winnerId of winnerUserIds) {
         const winnerWallet = await Wallet.findOne({ user_id: winnerId });
         if (winnerWallet) {
           winnerWallet.balance_mxne += prizePerWinner;
           await winnerWallet.save();
 
-          // Create payment transaction for winner
           const payTx = new Transaction({
             user_id: winnerId,
             type: 'release',
             amount_mxn: prizePerWinner,
             amount_mxne: prizePerWinner,
             status: 'completed',
-            stellar_tx_hash: `mock_prize_${Date.now()}_${winnerId}`
+            stellar_tx_hash: `event_prize_${event.on_chain_id || Date.now()}_${winnerId}`,
           });
           await payTx.save();
 
-          // Notify winner
-          await createNotification(
-            winnerId,
-            'event',
-            '¡Felicidades, ganaste!',
-            `Has ganado el evento "${event.title}" y recibiste ${prizePerWinner} MXNe.`,
-            event._id
-          );
+          await createNotification(winnerId, 'event', '¡Felicidades, ganaste!',
+            `Has ganado "${event.title}" y recibiste ${prizePerWinner} MXNe.`, event._id);
         }
-
-        // Update reputation: +10 for winners
-        await updateUserReputation(winnerId, event.category_id, 10, 'event_win', event._id);
       }
 
       escrow.status = 'released';
       await escrow.save();
     }
 
-    // Update reputation for non-winner participants: +1
-    const allParticipants = await EventParticipant.find({ event_id: req.params.id });
-    for (const participant of allParticipants) {
-      if (!winners.some(w => w.toString() === participant.freelancer_id.toString())) {
-        await updateUserReputation(participant.freelancer_id, event.category_id, 1, 'event_participation', event._id);
-      }
-    }
-
-    // Update event status
     event.status = 'completed';
     await event.save();
 
-    // Call Soroban mock
-    await distributeEventPrize(event._id, winners[0], 'admin_secret');
-
-    res.status(200).json({ message: "Winners selected!", winners });
-  } catch(err) {
+    res.status(200).json({ success: true, data: { message: 'Ganadores seleccionados.', winners: winnerUserIds } });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Helper: update user reputation by category
+ * POST /events/:id/timeout
+ * Distribuye fondos por timeout. Llamado por cron job interno.
  */
-async function updateUserReputation(userId, categoryId, delta, reason, sourceId) {
+const timeoutDistribute = async (req, res) => {
   try {
-    // Find or create reputation entry
-    let rep = await Reputation.findOne({ user_id: userId, category_id: categoryId });
-    if (!rep) {
-      rep = new Reputation({ user_id: userId, category_id: categoryId, score: 0 });
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ error: 'Evento no encontrado.' });
+
+    if (event.on_chain_id) {
+      const platformKeypair = Keypair.fromSecret(process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET);
+      await contracts.timeoutDistribute(platformKeypair, event.on_chain_id);
     }
-    rep.score += delta;
 
-    // Update level based on score
-    if (rep.score >= 100) rep.level = 'diamond';
-    else if (rep.score >= 50) rep.level = 'gold';
-    else if (rep.score >= 20) rep.level = 'silver';
-    else rep.level = 'bronze';
+    // Refundir escrow al reclutador si no hay ganadores
+    const escrow = await Escrow.findOne({ type: 'event', reference_id: event._id, status: 'locked' });
+    if (escrow) {
+      const recruiterWallet = await Wallet.findOne({ user_id: event.recruiter_id });
+      if (recruiterWallet) {
+        recruiterWallet.balance_mxne += escrow.amount;
+        await recruiterWallet.save();
+      }
+      escrow.status = 'refunded';
+      await escrow.save();
+    }
 
-    await rep.save();
+    event.status = 'expired';
+    await event.save();
 
-    // Create immutable log
-    const log = new ReputationLog({
-      user_id: userId,
-      category_id: categoryId,
-      delta,
-      reason,
-      source_type: reason.startsWith('event') ? 'event' : 'project',
-      source_id: sourceId,
-      soroban_tx_hash: `mock_rep_${Date.now()}`
-    });
-    await log.save();
-
-    // Record on-chain (mock)
-    await recordReputationOnChain(userId, categoryId, delta, 'admin_secret');
+    res.status(200).json({ success: true, data: { message: 'Evento expirado y fondos redistribuidos.' } });
   } catch (err) {
-    console.error('Error updating reputation:', err.message);
+    res.status(500).json({ error: err.message });
   }
-}
+};
 
 /**
- * Get participants of an event
+ * GET /events/:id/participants
  */
 const getEventParticipants = async (req, res) => {
   try {
     const participants = await EventParticipant.find({ event_id: req.params.id })
       .populate('freelancer_id', 'username profile_image stellar_public_key');
-    res.status(200).json(participants);
+    res.status(200).json({ success: true, data: participants });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 /**
- * Get submissions of an event
+ * GET /events/:id/submissions
  */
 const getEventSubmissions = async (req, res) => {
   try {
     const submissions = await EventSubmission.find({ event_id: req.params.id })
       .populate('freelancer_id', 'username profile_image');
-    res.status(200).json(submissions);
+    res.status(200).json({ success: true, data: submissions });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-module.exports = { createEvent, getEvents, getEventById, applyToEvent, submitWork, selectWinner, getEventParticipants, getEventSubmissions };
+module.exports = { createEvent, getEvents, getEventById, applyToEvent, submitWork, selectWinner, timeoutDistribute, getEventParticipants, getEventSubmissions };

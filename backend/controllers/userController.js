@@ -3,13 +3,27 @@ const FreelancerProfile = require('../models/FreelancerProfile');
 const RecruiterProfile = require('../models/RecruiterProfile');
 const { Reputation, ReputationLog } = require('../models/Reputation');
 const { Project } = require('../models/Project');
-const { EventParticipant } = require('../models/Event');
+const { Event, EventParticipant } = require('../models/Event');
+const { Wallet } = require('../models/Wallet');
 const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
+const { Keypair } = require('@stellar/stellar-sdk');
+const { getReputation, isBanned, getEvent, getProject, updateWallet } = require('../contracts');
+const Category = require('../models/Category');
 
+/**
+ * GET /users/:publicKey
+ * Retorna perfil completo: datos off-chain + reputación on-chain + estado de ban.
+ */
 const getUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id).select('-password_hash');
-    if (!user) return res.status(404).json({ message: "User not found!" });
+    const { publicKey } = req.params;
+    const user = await User.findOne({ stellar_public_key: publicKey }).select('-password_hash');
+    if (!user) {
+      // Fallback: buscar por _id para retrocompatibilidad
+      const userById = await User.findById(publicKey).select('-password_hash');
+      if (!userById) return res.status(404).json({ error: 'Usuario no encontrado.' });
+      return res.status(200).json({ success: true, data: { user: userById } });
+    }
 
     let profile = null;
     if (user.role === 'freelancer') {
@@ -18,121 +32,38 @@ const getUser = async (req, res) => {
       profile = await RecruiterProfile.findOne({ user_id: user._id });
     }
 
-    res.status(200).json({ user, profile });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+    // Consultar reputación on-chain por cada categoría activa
+    let reputationMap = {};
+    let isBannedStatus = false;
+    try {
+      const platformPublicKey = Keypair.fromSecret(
+        process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET
+      ).publicKey();
 
-const updateProfile = async (req, res) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ message: "User not found!" });
+      const categories = await Category.find({});
+      for (const cat of categories) {
+        try {
+          const score = await getReputation(platformPublicKey, publicKey, cat.slug);
+          if (score > 0) reputationMap[cat.slug] = score;
+        } catch { /* categoría sin reputación */ }
+      }
 
-    if (user.role === 'freelancer') {
-      const profile = await FreelancerProfile.findOneAndUpdate(
-        { user_id: req.userId },
-        { $set: req.body },
-        { new: true }
-      );
-      return res.status(200).json(profile);
-    } else if (user.role === 'recruiter') {
-      const profile = await RecruiterProfile.findOneAndUpdate(
-        { user_id: req.userId },
-        { $set: req.body },
-        { new: true }
-      );
-      return res.status(200).json(profile);
+      isBannedStatus = await isBanned(platformPublicKey, publicKey);
+    } catch (contractErr) {
+      console.error('Error consultando reputación on-chain:', contractErr.message);
     }
-    
-    res.status(400).json({ message: "Invalid role" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-const deleteUser = async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found!" });
-
-    if (req.userId !== user._id.toString() && req.role !== 'admin') {
-      return res.status(403).json({ message: "You can delete only your account!" });
-    }
-
-    await User.findByIdAndDelete(req.params.id);
-    if (user.role === 'freelancer') await FreelancerProfile.findOneAndDelete({ user_id: req.params.id });
-    if (user.role === 'recruiter') await RecruiterProfile.findOneAndDelete({ user_id: req.params.id });
-
-    res.status(200).json({ message: "Account has been deleted." });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
-/**
- * Get on-chain profile for a user including:
- * - Accumulated reputation (all categories)
- * - Work history (completed projects)
- * - Event participation (events won/participated)
- * - Skills (from FreelancerProfile)
- */
-const getOnChainProfile = async (req, res) => {
-  try {
-    const userId = req.params.id;
-    const user = await User.findById(userId).select('-password_hash');
-    if (!user) return res.status(404).json({ message: "User not found!" });
-
-    // Reputation by category
-    const reputations = await Reputation.find({ user_id: userId }).populate('category_id');
-    const totalReputation = reputations.reduce((sum, r) => sum + r.score, 0);
-
-    // Work history (completed projects)
-    const completedProjects = await Project.find({
-      $or: [{ freelancer_id: userId }, { recruiter_id: userId }],
-      status: 'completed'
-    }).select('title description amount status created_at');
-
-    // Event participation
-    const eventParticipations = await EventParticipant.find({ freelancer_id: userId })
-      .populate('event_id', 'title description prize_amount status');
-
-    const eventsWon = eventParticipations.filter(ep => ep.status === 'winner');
-    const eventsParticipated = eventParticipations.length;
-
-    // Skills (from FreelancerProfile)
-    let skills = [];
-    if (user.role === 'freelancer') {
-      const profile = await FreelancerProfile.findOne({ user_id: userId });
-      if (profile) skills = profile.skills || [];
-    }
-
-    // Reputation logs (immutable history)
-    const reputationHistory = await ReputationLog.find({ user_id: userId })
-      .sort({ created_at: -1 })
-      .limit(50);
 
     res.status(200).json({
-      user: {
-        _id: user._id,
+      success: true,
+      data: {
+        publicKey: user.stellar_public_key,
         username: user.username,
         role: user.role,
-        stellar_public_key: user.stellar_public_key,
-        status: user.status,
-        created_at: user.created_at
+        reputation: reputationMap,
+        isBanned: isBannedStatus,
+        profile,
+        user,
       },
-      reputation: {
-        total: totalReputation,
-        by_category: reputations
-      },
-      work_history: completedProjects,
-      events: {
-        total_participated: eventsParticipated,
-        total_won: eventsWon.length,
-        details: eventParticipations
-      },
-      skills,
-      reputation_history: reputationHistory
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -140,49 +71,64 @@ const getOnChainProfile = async (req, res) => {
 };
 
 /**
- * Search freelancers by reputation, skills, history
+ * GET /users/:publicKey/wallet
+ * Retorna la publicKey asociada al usuario.
  */
-const searchFreelancers = async (req, res) => {
+const getWalletForUser = async (req, res) => {
   try {
-    const { skills, min_reputation, min_projects, sort_by, page = 1, limit = 20 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const user = await User.findOne({ stellar_public_key: req.params.publicKey });
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
 
-    let query = {};
-
-    // Search by skills (text search)
-    if (skills) {
-      const skillsArray = skills.split(',').map(s => s.trim());
-      query.skills = { $in: skillsArray };
+    // Verificar autorización: solo el propio usuario o admin
+    if (req.userId !== user._id.toString() && req.role !== 'admin') {
+      return res.status(403).json({ error: 'No autorizado.' });
     }
 
-    if (min_reputation) {
-      query.reputation_score = { $gte: parseInt(min_reputation) };
+    res.status(200).json({ success: true, data: { publicKey: user.stellar_public_key } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * POST /users/:publicKey/wallet/rotate
+ * Rota la wallet custodial del usuario.
+ */
+const rotateWallet = async (req, res) => {
+  try {
+    const user = await User.findOne({ stellar_public_key: req.params.publicKey });
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    if (req.userId !== user._id.toString() && req.role !== 'admin') {
+      return res.status(403).json({ error: 'No autorizado.' });
     }
 
-    if (min_projects) {
-      query.completed_projects = { $gte: parseInt(min_projects) };
+    const oldPublicKey = user.stellar_public_key;
+
+    // Generar nuevo keypair
+    const newKeypair = Keypair.random();
+    const newPublicKey = newKeypair.publicKey();
+    const newEncryptedSecret = newKeypair.secret(); // En producción: cifrar
+
+    // Actualizar on-chain
+    const adminKeypair = Keypair.fromSecret(process.env.ADMIN_SECRET);
+    await updateWallet(adminKeypair, oldPublicKey, newPublicKey);
+
+    // Actualizar DB
+    user.stellar_public_key = newPublicKey;
+    await user.save();
+
+    // Actualizar wallet en DB
+    const wallet = await Wallet.findOne({ user_id: user._id });
+    if (wallet) {
+      wallet.stellar_address = newPublicKey;
+      wallet.encrypted_secret = newEncryptedSecret;
+      await wallet.save();
     }
-
-    let sortOption = { reputation_score: -1 }; // Default sort by reputation
-    if (sort_by === 'rating') sortOption = { rating: -1 };
-    if (sort_by === 'projects') sortOption = { completed_projects: -1 };
-
-    const freelancers = await SearchIndexFreelancers.find(query)
-      .sort(sortOption)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('user_id', 'username profile_image bio stellar_public_key');
-
-    const total = await SearchIndexFreelancers.countDocuments(query);
 
     res.status(200).json({
-      freelancers,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / parseInt(limit))
-      }
+      success: true,
+      data: { publicKey: newPublicKey, message: 'Wallet rotada exitosamente.' },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -190,14 +136,100 @@ const searchFreelancers = async (req, res) => {
 };
 
 /**
- * Get ranking of users by total reputation
+ * GET /users/:publicKey/history
+ * Retorna historial de eventos y proyectos del usuario.
+ */
+const getUserHistory = async (req, res) => {
+  try {
+    const { publicKey } = req.params;
+    const { page = 1, limit = 20, type } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const user = await User.findOne({ stellar_public_key: publicKey });
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    const result = { events: [], projects: [] };
+
+    if (!type || type === 'event') {
+      const participations = await EventParticipant.find({ freelancer_id: user._id })
+        .populate('event_id', 'title description prize_amount status category_id created_at')
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+      result.events = participations;
+    }
+
+    if (!type || type === 'project') {
+      const projects = await Project.find({
+        $or: [{ freelancer_id: user._id }, { recruiter_id: user._id }],
+      })
+        .select('title description amount status category_id created_at')
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(parseInt(limit));
+      result.projects = projects;
+    }
+
+    res.status(200).json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * PATCH /users/:publicKey
+ * Actualiza datos del perfil off-chain.
+ */
+const updateProfile = async (req, res) => {
+  try {
+    const user = await User.findOne({ stellar_public_key: req.params.publicKey });
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    if (req.userId !== user._id.toString()) {
+      return res.status(403).json({ error: 'Solo puedes editar tu propio perfil.' });
+    }
+
+    // Actualizar campos del usuario
+    if (req.body.username) user.username = req.body.username;
+    if (req.body.bio) user.bio = req.body.bio;
+    if (req.body.avatarUrl) user.profile_image = req.body.avatarUrl;
+    await user.save();
+
+    // Actualizar perfil según rol
+    if (user.role === 'freelancer') {
+      const profile = await FreelancerProfile.findOneAndUpdate(
+        { user_id: user._id },
+        { $set: req.body },
+        { new: true }
+      );
+      return res.status(200).json({ success: true, data: profile });
+    } else if (user.role === 'recruiter') {
+      const profile = await RecruiterProfile.findOneAndUpdate(
+        { user_id: user._id },
+        { $set: req.body },
+        { new: true }
+      );
+      return res.status(200).json({ success: true, data: profile });
+    }
+
+    res.status(200).json({ success: true, data: user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * GET /users/ranking
  */
 const getRanking = async (req, res) => {
   try {
-    const { limit = 50, category_id } = req.query;
+    const { limit = 50, category } = req.query;
 
     let matchStage = {};
-    if (category_id) matchStage.category_id = category_id;
+    if (category) {
+      const cat = await Category.findOne({ slug: category });
+      if (cat) matchStage.category_id = cat._id;
+    }
 
     const ranking = await Reputation.aggregate([
       { $match: matchStage },
@@ -205,8 +237,8 @@ const getRanking = async (req, res) => {
         $group: {
           _id: '$user_id',
           total_score: { $sum: '$score' },
-          categories: { $push: { category_id: '$category_id', score: '$score', level: '$level' } }
-        }
+          categories: { $push: { category_id: '$category_id', score: '$score', level: '$level' } },
+        },
       },
       { $sort: { total_score: -1 } },
       { $limit: parseInt(limit) },
@@ -215,8 +247,8 @@ const getRanking = async (req, res) => {
           from: 'users',
           localField: '_id',
           foreignField: '_id',
-          as: 'user'
-        }
+          as: 'user',
+        },
       },
       { $unwind: '$user' },
       {
@@ -226,15 +258,38 @@ const getRanking = async (req, res) => {
           profile_image: '$user.profile_image',
           stellar_public_key: '$user.stellar_public_key',
           total_score: 1,
-          categories: 1
-        }
-      }
+          categories: 1,
+        },
+      },
     ]);
 
-    res.status(200).json(ranking);
+    res.status(200).json({ success: true, data: ranking });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
-module.exports = { getUser, deleteUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking };
+/**
+ * DELETE /users/:publicKey
+ */
+const deleteUser = async (req, res) => {
+  try {
+    const user = await User.findOne({ stellar_public_key: req.params.publicKey })
+      || await User.findById(req.params.publicKey);
+    if (!user) return res.status(404).json({ error: 'Usuario no encontrado.' });
+
+    if (req.userId !== user._id.toString() && req.role !== 'admin') {
+      return res.status(403).json({ error: 'Solo puedes eliminar tu propia cuenta.' });
+    }
+
+    await User.findByIdAndDelete(user._id);
+    if (user.role === 'freelancer') await FreelancerProfile.findOneAndDelete({ user_id: user._id });
+    if (user.role === 'recruiter') await RecruiterProfile.findOneAndDelete({ user_id: user._id });
+
+    res.status(200).json({ success: true, data: { message: 'Cuenta eliminada.' } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+module.exports = { getUser, getWalletForUser, rotateWallet, getUserHistory, updateProfile, getRanking, deleteUser };

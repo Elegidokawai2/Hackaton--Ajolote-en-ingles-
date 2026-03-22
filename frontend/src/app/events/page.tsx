@@ -94,7 +94,7 @@ export default function EventsPage() {
                 value={categoryFilter}
                 onChange={setCategoryFilter}
                 placeholder="Todas las categorías"
-                options={categories.map((c) => ({ value: c._id, label: c.name }))}
+                options={categories?.length > 0 ? categories.map((c) => ({ value: c._id, label: c.name })) : []}
               />
             </div>
           </div>

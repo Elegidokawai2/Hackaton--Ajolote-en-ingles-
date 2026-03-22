@@ -52,7 +52,9 @@ export default function LoginPage() {
     });
     try {
       const res = await promise;
-      setAuth(res.data);
+      const { token, user } = res.data.data || res.data;
+      if (token) localStorage.setItem('pw_token', token);
+      setAuth(user);
       router.push('/dashboard');
     } catch { }
     finally { setLoading(false); }

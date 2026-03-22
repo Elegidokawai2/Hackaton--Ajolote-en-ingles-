@@ -65,7 +65,7 @@ impl ProjectContract {
         wallet_registry_addr: Address,
     ) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!("already initialized");
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -93,7 +93,7 @@ impl ProjectContract {
         );
 
         if !is_active {
-            panic!("user wallet is not registered or is inactive");
+            panic_with_error!("user wallet is not registered or is inactive");
         }
     }
 
@@ -112,7 +112,7 @@ impl ProjectContract {
         );
 
         if role_val != Symbol::new(env, expected_role_tag) {
-            panic!("wallet does not have the required role for this operation");
+            panic_with_error!("wallet does not have the required role for this operation");
         }
     }
 
@@ -157,16 +157,16 @@ impl ProjectContract {
         Self::require_role(&env, &freelancer, "Freelancer");
 
         if amount <= 0 {
-            panic!("amount must be positive");
+            panic_with_error!("amount must be positive");
         }
         if guarantee < 0 {
-            panic!("guarantee must be non-negative");
+            panic_with_error!("guarantee must be non-negative");
         }
 
         let now = env.ledger().timestamp();
         let one_day_secs: u64 = 24 * 60 * 60;
         if deadline < now + one_day_secs {
-            panic!("deadline must be at least 1 day from now");
+            panic_with_error!("deadline must be at least 1 day from now");
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -211,10 +211,10 @@ impl ProjectContract {
             .unwrap();
 
         if project.status != ProjectStatus::Created {
-            panic!("project is not in Created status");
+            panic_with_error!("project is not in Created status");
         }
         if project.freelancer != freelancer {
-            panic!("only the assigned freelancer can accept");
+            panic_with_error!("only the assigned freelancer can accept");
         }
 
         project.status = ProjectStatus::Active;
@@ -239,10 +239,10 @@ impl ProjectContract {
             .unwrap();
 
         if project.freelancer != freelancer {
-            panic!("only the assigned freelancer can submit");
+            panic_with_error!("only the assigned freelancer can submit");
         }
         if project.status != ProjectStatus::Active && project.status != ProjectStatus::Correcting {
-            panic!("project must be Active or Correcting to submit delivery");
+            panic_with_error!("project must be Active or Correcting to submit delivery");
         }
 
         project.delivery_hash = delivery_hash;
@@ -263,10 +263,10 @@ impl ProjectContract {
             .unwrap();
 
         if project.recruiter != recruiter {
-            panic!("only the recruiter can approve");
+            panic_with_error!("only the recruiter can approve");
         }
         if project.status != ProjectStatus::Delivered {
-            panic!("project must be in Delivered status");
+            panic_with_error!("project must be in Delivered status");
         }
 
         let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
@@ -299,13 +299,13 @@ impl ProjectContract {
             .unwrap();
 
         if project.recruiter != recruiter {
-            panic!("only the recruiter can request corrections");
+            panic_with_error!("only the recruiter can request corrections");
         }
         if project.status != ProjectStatus::Delivered {
-            panic!("project must be in Delivered status");
+            panic_with_error!("project must be in Delivered status");
         }
         if project.correction_count >= 2 {
-            panic!("maximum correction rounds reached");
+            panic_with_error!("maximum correction rounds reached");
         }
 
         project.correction_count += 1;
@@ -325,10 +325,10 @@ impl ProjectContract {
             .unwrap();
 
         if project.recruiter != recruiter {
-            panic!("only the recruiter can reject");
+            panic_with_error!("only the recruiter can reject");
         }
         if project.status != ProjectStatus::Delivered {
-            panic!("project must be in Delivered status");
+            panic_with_error!("project must be in Delivered status");
         }
 
         project.status = ProjectStatus::Disputed;
@@ -346,7 +346,7 @@ impl ProjectContract {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("only admin can resolve disputes");
+            panic_with_error!("only admin can resolve disputes");
         }
 
         let mut project: ProjectData = env
@@ -356,7 +356,7 @@ impl ProjectContract {
             .unwrap();
 
         if project.status != ProjectStatus::Disputed {
-            panic!("project must be in Disputed status");
+            panic_with_error!("project must be in Disputed status");
         }
 
         let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
@@ -393,12 +393,12 @@ impl ProjectContract {
             .unwrap();
 
         if project.status != ProjectStatus::Delivered {
-            panic!("project must be in Delivered status for timeout_approve");
+            panic_with_error!("project must be in Delivered status for timeout_approve");
         }
 
         let now = env.ledger().timestamp();
         if now <= project.deadline {
-            panic!("deadline has not passed yet");
+            panic_with_error!("deadline has not passed yet");
         }
 
         let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();
@@ -428,12 +428,12 @@ impl ProjectContract {
             .unwrap();
 
         if project.status != ProjectStatus::Created && project.status != ProjectStatus::Correcting {
-            panic!("project must be in Created or Correcting status for timeout_refund");
+            panic_with_error!("project must be in Created or Correcting status for timeout_refund");
         }
 
         let now = env.ledger().timestamp();
         if now <= project.deadline {
-            panic!("deadline has not passed yet");
+            panic_with_error!("deadline has not passed yet");
         }
 
         let platform: Address = env.storage().instance().get(&DataKey::PlatformAddr).unwrap();

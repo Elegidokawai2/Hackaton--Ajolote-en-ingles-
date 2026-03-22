@@ -29,7 +29,6 @@ export interface FreelancerProfile {
 export interface RecruiterProfile {
   _id: string;
   user_id: string;
-  company_name: string;
   company_description: string;
   website: string;
   verified: boolean;

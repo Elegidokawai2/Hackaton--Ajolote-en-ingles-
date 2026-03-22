@@ -103,10 +103,46 @@ async function isBanned(callerPublicKey, userPublicKey) {
   return result?.b() ?? false;
 }
 
+/**
+ * Aplica shadowban a un usuario (solo admin).
+ * @param {Keypair} adminKeypair    - Keypair del admin
+ * @param {string}  userPublicKey   - Public key del usuario a banear
+ */
+async function shadowban(adminKeypair, userPublicKey) {
+  return invokeContract(
+    CONTRACT_IDS.reputation,
+    'shadowban',
+    [
+      toAddress(adminKeypair.publicKey()),
+      toAddress(userPublicKey),
+    ],
+    adminKeypair
+  );
+}
+
+/**
+ * Revierte el shadowban de un usuario (solo admin).
+ * @param {Keypair} adminKeypair    - Keypair del admin
+ * @param {string}  userPublicKey   - Public key del usuario a desbanear
+ */
+async function unban(adminKeypair, userPublicKey) {
+  return invokeContract(
+    CONTRACT_IDS.reputation,
+    'unban',
+    [
+      toAddress(adminKeypair.publicKey()),
+      toAddress(userPublicKey),
+    ],
+    adminKeypair
+  );
+}
+
 module.exports = {
   initializeReputation,
   addReputation,
   removeReputation,
   getReputation,
   isBanned,
+  shadowban,
+  unban,
 };

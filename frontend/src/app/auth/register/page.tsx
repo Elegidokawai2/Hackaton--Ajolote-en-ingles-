@@ -14,9 +14,9 @@ import { sileo } from 'sileo';
 
 const registerSchema = z.object({
   username: z.string().min(3, 'Mínimo 3 caracteres'),
-  email:    z.string().email('Email inválido'),
+  email: z.string().email('Email inválido'),
   password: z.string().min(6, 'Mínimo 6 caracteres'),
-  role:     z.enum(['freelancer', 'recruiter'], { required_error: 'Selecciona un rol' }),
+  role: z.enum(['Freelancer', 'Recruiter'], { required_error: 'Selecciona un rol' }),
 });
 type RegisterForm = z.infer<typeof registerSchema>;
 
@@ -25,7 +25,7 @@ function HexLogo() {
     <svg width="38" height="42" viewBox="0 0 20 22" fill="none" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="lg2" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%"   stopColor="#2185D5" />
+          <stop offset="0%" stopColor="#2185D5" />
           <stop offset="100%" stopColor="#818cf8" />
         </linearGradient>
       </defs>
@@ -42,7 +42,7 @@ export default function RegisterPage() {
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
-    defaultValues: { role: 'freelancer' },
+    defaultValues: { role: 'Freelancer' },
   });
 
   const selectedRole = watch('role');
@@ -54,13 +54,15 @@ export default function RegisterPage() {
       sileo.promise(regPromise, {
         loading: { title: 'Creando cuenta...' },
         success: { title: 'Cuenta creada' },
-        error:   { title: 'Error al crear cuenta' },
+        error: { title: 'Error al crear cuenta' },
       });
       await regPromise;
       const loginRes = await api.post('/auth/login', { email: data.email, password: data.password });
-      setAuth(loginRes.data);
+      const { token, user } = loginRes.data.data || loginRes.data;
+      if (token) localStorage.setItem('pw_token', token);
+      setAuth(user);
       router.push('/dashboard');
-    } catch {}
+    } catch { }
     finally { setLoading(false); }
   };
 
@@ -98,7 +100,7 @@ export default function RegisterPage() {
                 Soy
               </label>
               <div className="grid grid-cols-2 gap-2 p-1 rounded-xl" style={{ background: 'var(--surface-2)' }}>
-                {(['freelancer', 'recruiter'] as const).map((role) => (
+                {(['Freelancer', 'Recruiter'] as const).map((role) => (
                   <button
                     key={role}
                     type="button"
@@ -115,7 +117,7 @@ export default function RegisterPage() {
                       boxShadow: '0 2px 12px rgba(33,133,213,0.35)',
                     } : {}}
                   >
-                    {role === 'freelancer' ? 'Freelancer' : 'Reclutador'}
+                    {role === 'Freelancer' ? 'Freelancer' : 'Reclutador'}
                   </button>
                 ))}
               </div>

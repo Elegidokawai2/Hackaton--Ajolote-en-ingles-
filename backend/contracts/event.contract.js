@@ -9,18 +9,21 @@ const { toAddress, toI128, toSymbol, toU64, toBytes32, toAddressVec } = require(
 
 /**
  * Inicializa el contrato de eventos (solo una vez al desplegar).
- * Recibe adicionalmente la dirección del WalletRegistry para validar
- * actividad y rol en create_event y apply_to_event.
- * @param {Keypair} adminKeypair - Keypair del admin
- * @param {string}  tokenAddress - Address del token para escrow
+ * Firma v2: initialize(adminAddr, tokenAddr, reputationAddr, platformAddr, walletRegistryAddr)
+ * @param {Keypair} adminKeypair          - Keypair del admin
+ * @param {string}  tokenAddress          - Address del token MXNe para escrow
+ * @param {string}  reputationContractAddr - Address del contrato de reputación
+ * @param {string}  platformAddr          - Address de la wallet de la plataforma
  */
-async function initializeEvent(adminKeypair, tokenAddress) {
+async function initializeEvent(adminKeypair, tokenAddress, reputationContractAddr, platformAddr) {
   return invokeContract(
     CONTRACT_IDS.event,
     'initialize',
     [
       toAddress(adminKeypair.publicKey()),
       toAddress(tokenAddress),
+      toAddress(reputationContractAddr),
+      toAddress(platformAddr),
       toAddress(CONTRACT_IDS.walletRegistry),
     ],
     adminKeypair

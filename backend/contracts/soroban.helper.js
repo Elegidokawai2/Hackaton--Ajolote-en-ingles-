@@ -3,10 +3,13 @@
 
 const {
   Contract,
-  rpc,
   TransactionBuilder,
   xdr,
+  authorizeEntry,
+  SorobanDataBuilder,
 } = require('@stellar/stellar-sdk');
+
+const rpc = require('@stellar/stellar-sdk').rpc;
 
 const { server, NETWORK_PASSPHRASE, BASE_FEE } = require('./soroban.client');
 
@@ -19,6 +22,7 @@ const { server, NETWORK_PASSPHRASE, BASE_FEE } = require('./soroban.client');
  * @param {Keypair}     signerKeypair - Keypair del firmante
  * @returns {Promise<object>} Respuesta de la transacción confirmada
  */
+
 async function invokeContract(contractId, method, args, signerKeypair) {
   const account = await server.getAccount(signerKeypair.publicKey());
   const contract = new Contract(contractId);
@@ -31,27 +35,49 @@ async function invokeContract(contractId, method, args, signerKeypair) {
     .setTimeout(30)
     .build();
 
-  // 1. Simular para obtener los recursos necesarios
+  // 1. Simular
   const simResult = await server.simulateTransaction(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Simulation error: ${simResult.error}`);
+    throw new Error(simResult.error);
   }
 
-  // 2. Preparar la transacción con footprint y recursos
-  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+  // 2. Autorizar entradas que requieran firma del signerKeypair
+  //    Esto resuelve el require_auth() dentro del contrato
+  let authEntries = simResult.result?.auth ?? [];
+  if (authEntries.length > 0) {
+    const ledger = await server.getLatestLedger();
+    authEntries = await Promise.all(
+      authEntries.map(entry =>
+        authorizeEntry(
+          entry,
+          signerKeypair,
+          ledger.sequence + 100, // validUntilLedgerSeq
+          NETWORK_PASSPHRASE
+        )
+      )
+    );
+  }
 
-  // 3. Firmar
+  // 3. Ensamblar con auth firmadas
+  const preparedTx = rpc.assembleTransaction(tx, {
+    ...simResult,
+    result: simResult.result
+      ? { ...simResult.result, auth: authEntries }
+      : simResult.result,
+  }).build();
+
+  // 4. Firmar la transacción completa
   preparedTx.sign(signerKeypair);
 
-  // 4. Enviar
+  // 5. Enviar
   const sendResult = await server.sendTransaction(preparedTx);
 
   if (sendResult.status === 'ERROR') {
-    throw new Error(`Send error: ${JSON.stringify(sendResult.errorResult)}`);
+    throw new Error(JSON.stringify(sendResult.errorResult));
   }
 
-  // 5. Polling hasta confirmación
+  // 6. Polling
   let response;
   do {
     await new Promise(r => setTimeout(r, 2000));
@@ -59,7 +85,7 @@ async function invokeContract(contractId, method, args, signerKeypair) {
   } while (response.status === rpc.Api.GetTransactionStatus.NOT_FOUND);
 
   if (response.status === rpc.Api.GetTransactionStatus.FAILED) {
-    throw new Error(`Transaction failed: ${sendResult.hash}`);
+    throw new Error(sendResult.hash);
   }
 
   return response;
