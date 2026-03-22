@@ -31,3 +31,8 @@ dist-ssr
 # Ignorar migraciones de Django
 migrations/
 !*/migrations/__init__.py
+
+# Environment variables
+.env
+.env.*
+!.env.example
