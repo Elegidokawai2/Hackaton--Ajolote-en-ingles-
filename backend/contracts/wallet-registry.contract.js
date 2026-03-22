@@ -6,22 +6,29 @@ const { invokeContract, queryContract } = require('./soroban.helper');
 const { CONTRACT_IDS } = require('./soroban.client');
 const { toAddress, toSymbol, toBytes32 } = require('./scval.helpers');
 const crypto = require('crypto');
+const { xdr } = require('@stellar/stellar-sdk');
+
 /**
  * Registra un nuevo usuario en el WalletRegistry on-chain.
  * @param {Keypair} adminKeypair    - Keypair del admin de la plataforma
  * @param {string}  newPublicKey    - Public key de la nueva wallet del usuario
  * @param {string}  email           - Email del usuario (se hashea a SHA-256 antes de enviar)
- * @param {string}  role            - Rol: "Freelancer" | "Recruiter" | "Admin"
+ * @param {string}  role            - Rol: "Freelancer" | "Recruiter"
  */
 async function registerUser(adminKeypair, newPublicKey, email, role) {
   const emailHash = crypto.createHash('sha256').update(email).digest('hex');
+
+  // Soroban #[contracttype] enum unit variant → scvVec([scvSymbol("VariantName")])
+  const roleScVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(role)]);
+
   return invokeContract(
     CONTRACT_IDS.walletRegistry,
     'register_user',
     [
-      toAddress(newPublicKey),
-      toBytes32(emailHash),
-      toSymbol(role),
+      toAddress(adminKeypair.publicKey()), // arg 1: admin
+      toBytes32(emailHash),                // arg 2: email_hash (BytesN<32>)
+      toAddress(newPublicKey),             // arg 3: wallet
+      roleScVal,                           // arg 4: role (UserRole enum)
     ],
     adminKeypair
   );

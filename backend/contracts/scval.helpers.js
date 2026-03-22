@@ -18,7 +18,7 @@ const toU32 = (n) => nativeToScVal(n, { type: 'u32' });
 // Symbol (category)
 const toSymbol = (str) => xdr.ScVal.scvSymbol(str);
 
-// BytesN<32> (entry_hash, delivery_hash)
+// BytesN<32> (email_hash, entry_hash, delivery_hash)
 const toBytes32 = (hexString) => {
   const bytes = Buffer.from(hexString, 'hex');
   if (bytes.length !== 32) throw new Error('Hash must be 32 bytes');
@@ -32,4 +32,9 @@ const toBool = (b) => xdr.ScVal.scvBool(b);
 const toAddressVec = (pubkeys) =>
   xdr.ScVal.scvVec(pubkeys.map(pk => new Address(pk).toScVal()));
 
-module.exports = { toAddress, toU64, toI128, toU32, toSymbol, toBytes32, toBool, toAddressVec };
+// Soroban #[contracttype] enum unit variant (e.g. UserRole::Recruiter)
+const toEnum = (variantName) =>
+  xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(variantName)]);
+
+module.exports = { toAddress, toU64, toI128, toU32, toSymbol, toBytes32, toBool, toAddressVec, toEnum };
+
