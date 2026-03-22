@@ -64,7 +64,6 @@ const register = async (req, res) => {
     } else if (role.toLowerCase() === 'recruiter') {
       const profile = new RecruiterProfile({
         user_id: newUser._id,
-        company_name: profileData.company_name || 'My Company',
         company_description: profileData.company_description || '',
       });
       await profile.save();

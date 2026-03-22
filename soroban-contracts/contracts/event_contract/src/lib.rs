@@ -60,7 +60,7 @@ impl EventContract {
         wallet_registry_addr: Address,
     ) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!("already initialized");
         }
         admin.require_auth();
 
@@ -90,7 +90,7 @@ impl EventContract {
         );
 
         if !is_active {
-            panic!("user wallet is not registered or is inactive");
+            panic_with_error!("user wallet is not registered or is inactive");
         }
     }
 
@@ -111,7 +111,7 @@ impl EventContract {
         );
 
         if role_val != Symbol::new(env, expected_role_tag) {
-            panic!("wallet does not have the required role for this operation");
+            panic_with_error!("wallet does not have the required role for this operation");
         }
     }
 
@@ -134,10 +134,10 @@ impl EventContract {
         Self::require_role(&env, &recruiter, "Recruiter");
 
         if prize <= 0 {
-            panic!("prize must be positive");
+            panic_with_error!("prize must be positive");
         }
         if deadline_submit >= deadline_select {
-            panic!("deadline_submit must be before deadline_select");
+            panic_with_error!("deadline_submit must be before deadline_select");
         }
 
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
@@ -181,17 +181,17 @@ impl EventContract {
             .unwrap();
 
         if event.status != EventStatus::Open {
-            panic!("event is not open");
+            panic_with_error!("event is not open");
         }
 
         let now = env.ledger().timestamp();
         if now > event.deadline_submit {
-            panic!("submission deadline has passed");
+            panic_with_error!("submission deadline has passed");
         }
 
         for i in 0..event.applicants.len() {
             if event.applicants.get(i).unwrap() == freelancer {
-                panic!("already applied");
+                panic_with_error!("already applied");
             }
         }
 
@@ -213,12 +213,12 @@ impl EventContract {
             .unwrap();
 
         if event.status != EventStatus::Open {
-            panic!("event is not open");
+            panic_with_error!("event is not open");
         }
 
         let now = env.ledger().timestamp();
         if now > event.deadline_submit {
-            panic!("submission deadline has passed");
+            panic_with_error!("submission deadline has passed");
         }
 
         let mut found = false;
@@ -229,7 +229,7 @@ impl EventContract {
             }
         }
         if !found {
-            panic!("freelancer has not applied to this event");
+            panic_with_error!("freelancer has not applied to this event");
         }
 
         event.submissions.set(freelancer, entry_hash);
@@ -250,21 +250,21 @@ impl EventContract {
         event.recruiter.require_auth();
 
         if event.status != EventStatus::Open {
-            panic!("event is not open");
+            panic_with_error!("event is not open");
         }
 
         let now = env.ledger().timestamp();
         if now < event.deadline_submit {
-            panic!("cannot select winners before submission deadline");
+            panic_with_error!("cannot select winners before submission deadline");
         }
         if winners.is_empty() {
-            panic!("must select at least one winner");
+            panic_with_error!("must select at least one winner");
         }
 
         for i in 0..winners.len() {
             let winner = winners.get(i).unwrap();
             if !event.submissions.contains_key(winner.clone()) {
-                panic!("winner has not submitted an entry");
+                panic_with_error!("winner has not submitted an entry");
             }
         }
 
@@ -335,12 +335,12 @@ impl EventContract {
             .unwrap();
 
         if event.status != EventStatus::Open {
-            panic!("event is not open");
+            panic_with_error!("event is not open");
         }
 
         let now = env.ledger().timestamp();
         if now <= event.deadline_select {
-            panic!("selection deadline has not passed yet");
+            panic_with_error!("selection deadline has not passed yet");
         }
 
         let commission = event.prize / 10; // 10%

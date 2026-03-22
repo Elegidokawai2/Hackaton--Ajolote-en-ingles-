@@ -28,7 +28,7 @@ impl ReputationLedger {
     /// on-chain emitida por WalletRegistry al momento del registro.
     pub fn initialize(env: Env, admin: Address, wallet_registry_addr: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!("already initialized");
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -66,7 +66,7 @@ impl ReputationLedger {
         );
 
         if !is_active {
-            panic!("user wallet is not registered or is inactive");
+            panic_with_error!("user wallet is not registered or is inactive");
         }
     }
 
@@ -98,7 +98,7 @@ impl ReputationLedger {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         caller.require_auth();
         if caller != admin {
-            panic!("only admin can add reputation");
+            panic_with_error!("only admin can add reputation");
         }
 
         // Verificar que la wallet existe y está activa antes de acreditar reputación
@@ -115,7 +115,7 @@ impl ReputationLedger {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         caller.require_auth();
         if caller != admin {
-            panic!("only admin can remove reputation");
+            panic_with_error!("only admin can remove reputation");
         }
 
         Self::require_registered_wallet(&env, &user);
@@ -123,7 +123,7 @@ impl ReputationLedger {
         let key = DataKey::Rep(user, category);
         let current: u32 = env.storage().persistent().get(&key).unwrap_or(0u32);
         if delta > current {
-            panic!("cannot reduce reputation below zero");
+            panic_with_error!("cannot reduce reputation below zero");
         }
         env.storage().persistent().set(&key, &(current - delta));
     }
@@ -133,7 +133,7 @@ impl ReputationLedger {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         caller.require_auth();
         if caller != admin {
-            panic!("only admin can shadowban");
+            panic_with_error!("only admin can shadowban");
         }
 
         env.storage().persistent().set(&DataKey::Banned(user), &true);
@@ -144,7 +144,7 @@ impl ReputationLedger {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         caller.require_auth();
         if caller != admin {
-            panic!("only admin can unban");
+            panic_with_error!("only admin can unban");
         }
 
         env.storage().persistent().set(&DataKey::Banned(user), &false);

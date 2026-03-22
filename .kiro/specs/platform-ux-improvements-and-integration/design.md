@@ -533,7 +533,6 @@ export interface ProfileUpdateData {
   portfolio_url?: string;
   
   // Recruiter profile fields
-  company_name?: string;
   company_description?: string;
   website?: string;
 }

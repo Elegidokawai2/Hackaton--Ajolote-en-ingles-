@@ -46,7 +46,7 @@ impl WalletRegistry {
     /// Configura el admin del contrato. Solo se puede llamar una vez.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            panic_with_error!("already initialized");
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -74,17 +74,17 @@ impl WalletRegistry {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("only admin can register users");
+            panic_with_error!("only admin can register users");
         }
 
         // Evitar registro duplicado por email
         if env.storage().persistent().has(&DataKey::UserByEmail(email_hash.clone())) {
-            panic!("email already registered");
+            panic_with_error!("email already registered");
         }
 
         // Evitar que una misma wallet se registre dos veces
         if env.storage().persistent().has(&DataKey::EmailByWallet(wallet.clone())) {
-            panic!("wallet already registered");
+            panic_with_error!("wallet already registered");
         }
 
         let profile = UserProfile {
@@ -117,18 +117,18 @@ impl WalletRegistry {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("only admin can update wallets");
+            panic_with_error!("only admin can update wallets");
         }
 
         let mut profile: UserProfile = env
             .storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash.clone()))
-            .unwrap_or_else(|| panic!("user not found"));
+            .unwrap_or_else(|| panic_with_error!("user not found"));
 
         // Verificar que la nueva wallet no esté ya tomada por otro usuario
         if env.storage().persistent().has(&DataKey::EmailByWallet(new_wallet.clone())) {
-            panic!("new wallet already registered to another user");
+            panic_with_error!("new wallet already registered to another user");
         }
 
         // Eliminar el índice inverso de la wallet antigua
@@ -154,14 +154,14 @@ impl WalletRegistry {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("only admin can deactivate users");
+            panic_with_error!("only admin can deactivate users");
         }
 
         let mut profile: UserProfile = env
             .storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash.clone()))
-            .unwrap_or_else(|| panic!("user not found"));
+            .unwrap_or_else(|| panic_with_error!("user not found"));
 
         profile.active = false;
         env.storage()
@@ -174,14 +174,14 @@ impl WalletRegistry {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("only admin can activate users");
+            panic_with_error!("only admin can activate users");
         }
 
         let mut profile: UserProfile = env
             .storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash.clone()))
-            .unwrap_or_else(|| panic!("user not found"));
+            .unwrap_or_else(|| panic_with_error!("user not found"));
 
         profile.active = true;
         env.storage()
@@ -196,7 +196,7 @@ impl WalletRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash))
-            .unwrap_or_else(|| panic!("user not found"))
+            .unwrap_or_else(|| panic_with_error!("user not found"))
     }
 
     /// Retorna el perfil de un usuario dado su wallet address (índice inverso).
@@ -205,7 +205,7 @@ impl WalletRegistry {
             .storage()
             .persistent()
             .get(&DataKey::EmailByWallet(wallet))
-            .unwrap_or_else(|| panic!("wallet not registered"));
+            .unwrap_or_else(|| panic_with_error!("wallet not registered"));
 
         env.storage()
             .persistent()
@@ -221,7 +221,7 @@ impl WalletRegistry {
             .storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash))
-            .unwrap_or_else(|| panic!("user not found"));
+            .unwrap_or_else(|| panic_with_error!("user not found"));
 
         profile.wallet
     }
@@ -232,7 +232,7 @@ impl WalletRegistry {
             .storage()
             .persistent()
             .get(&DataKey::UserByEmail(email_hash))
-            .unwrap_or_else(|| panic!("user not found"));
+            .unwrap_or_else(|| panic_with_error!("user not found"));
 
         profile.active
     }
@@ -245,7 +245,7 @@ impl WalletRegistry {
             .storage()
             .persistent()
             .get(&DataKey::EmailByWallet(wallet))
-            .unwrap_or_else(|| panic!("wallet not registered"));
+            .unwrap_or_else(|| panic_with_error!("wallet not registered"));
  
         let profile: UserProfile = env
             .storage()
@@ -264,7 +264,7 @@ impl WalletRegistry {
             .storage()
             .persistent()
             .get(&DataKey::EmailByWallet(wallet))
-            .unwrap_or_else(|| panic!("wallet not registered"));
+            .unwrap_or_else(|| panic_with_error!("wallet not registered"));
  
         let profile: UserProfile = env
             .storage()

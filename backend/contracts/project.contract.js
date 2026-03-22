@@ -7,12 +7,13 @@ const { CONTRACT_IDS } = require('./soroban.client');
 const { toAddress, toI128, toSymbol, toU64, toBytes32, toBool } = require('./scval.helpers');
 /**
  * Inicializa el contrato de proyectos (solo una vez al desplegar).
- * Firma v2: initialize(adminAddr, tokenAddr, reputationAddr, walletRegistryAddr)
+ * Firma Rust: initialize(admin, token, reputation_addr, platform_addr, wallet_registry_addr)
  * @param {Keypair} adminKeypair          - Keypair del admin
  * @param {string}  tokenAddress          - Address del token MXNe para escrow
  * @param {string}  reputationContractAddr - Address del contrato de reputación
+ * @param {string}  platformAddr          - Address de la wallet de la plataforma
  */
-async function initializeProject(adminKeypair, tokenAddress, reputationContractAddr) {
+async function initializeProject(adminKeypair, tokenAddress, reputationContractAddr, platformAddr) {
     return invokeContract(
         CONTRACT_IDS.project,
         'initialize',
@@ -20,6 +21,7 @@ async function initializeProject(adminKeypair, tokenAddress, reputationContractA
             toAddress(adminKeypair.publicKey()),
             toAddress(tokenAddress),
             toAddress(reputationContractAddr),
+            toAddress(platformAddr),
             toAddress(CONTRACT_IDS.walletRegistry),
         ],
         adminKeypair
@@ -194,3 +196,17 @@ async function getProject(callerPublicKey, projectId) {
         callerPublicKey
     );
 }
+
+module.exports = {
+    initializeProject,
+    createProject,
+    acceptProject,
+    submitDelivery,
+    approveDelivery,
+    requestCorrection,
+    rejectDelivery,
+    resolveDispute,
+    timeoutApprove,
+    timeoutRefund,
+    getProject,
+};
