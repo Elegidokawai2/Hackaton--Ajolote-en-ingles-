@@ -1,9 +1,10 @@
 const express = require('express');
-const { deleteUser, getUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking } = require('../controllers/userController');
+const { getMe, deleteUser, getUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking } = require('../controllers/userController');
 const { verifyToken } = require('../middleware/jwt');
 
 const router = express.Router();
 
+router.get('/me', verifyToken, getMe);
 router.get('/search/freelancers', searchFreelancers);
 router.get('/ranking', getRanking);
 router.get('/:id', getUser);

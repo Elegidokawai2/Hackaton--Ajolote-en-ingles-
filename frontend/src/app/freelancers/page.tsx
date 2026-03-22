@@ -7,7 +7,7 @@ import Navbar from '@/components/layout/Navbar';
 import FreelancerCard from '@/components/freelancers/FreelancerCard';
 import Spinner from '@/components/ui/Spinner';
 import EmptyState from '@/components/ui/EmptyState';
-import { Search, Users } from 'lucide-react';
+import { Search, Users, SlidersHorizontal } from 'lucide-react';
 import type { SearchFreelancer } from '@/types';
 
 const SKILL_CATEGORIES = [
@@ -29,7 +29,6 @@ export default function FreelancersPage() {
       if (selectedSkill !== 'Todos') params.set('skills', selectedSkill);
       if (minRep > 0) params.set('min_reputation', String(minRep));
       params.set('limit', '50');
-
       const res = await api.get(`/users/search/freelancers?${params.toString()}`);
       const data = res.data;
       setFreelancers(Array.isArray(data?.freelancers) ? data.freelancers : Array.isArray(data) ? data : []);
@@ -40,11 +39,8 @@ export default function FreelancersPage() {
     }
   }, [selectedSkill, minRep]);
 
-  useEffect(() => {
-    fetchFreelancers();
-  }, [fetchFreelancers]);
+  useEffect(() => { fetchFreelancers(); }, [fetchFreelancers]);
 
-  // Client-side name filter (search is fast, no need for re-fetch)
   const filtered = freelancers.filter((f) => {
     if (!search) return true;
     const name = f.user_id?.username || '';
@@ -56,27 +52,36 @@ export default function FreelancersPage() {
   return (
     <ProtectedRoute>
       <Navbar />
-      <div className="pt-14 min-h-screen bg-zinc-100">
-        <div className="max-w-6xl mx-auto px-4 py-8">
-          <div className="mb-6">
-            <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-              Buscar freelancers
-            </h1>
-            <p className="text-sm text-zinc-500 mt-1">
-              Encuentra talento por categoría y reputación on-chain
+      <div className="pt-14 min-h-screen" style={{ background: 'var(--bg)' }}>
+        {/* BG orb */}
+        <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 0 }}>
+          <div className="glow-orb w-[500px] h-[500px] -top-40 -right-40 opacity-[0.07]" style={{ background: '#818cf8' }} />
+          <div className="glow-orb w-[400px] h-[400px] -bottom-32 -left-32 opacity-[0.06]" style={{ background: '#2185D5' }} />
+        </div>
+
+        <div className="relative z-10 max-w-6xl mx-auto px-4 py-8">
+          {/* Header */}
+          <div className="animate-fade-up mb-8">
+            <p className="text-[10.5px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: 'var(--text-3)' }}>
+              Talento
+            </p>
+            <h1 className="text-3xl font-bold text-white tracking-tight">Freelancers</h1>
+            <p className="text-sm mt-1.5" style={{ color: 'var(--text-2)' }}>
+              Encuentra talento verificado con reputación on-chain
             </p>
           </div>
 
           {/* Filters */}
-          <div className="space-y-4 mb-6">
+          <div className="animate-fade-up delay-100 space-y-4 mb-8">
+            {/* Search */}
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none" style={{ color: 'var(--text-3)' }} />
               <input
                 type="text"
-                placeholder="Buscar por nombre o especialidad..."
+                placeholder="Buscar por nombre o especialidad…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full border border-zinc-200 bg-white rounded-lg pl-9 pr-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 transition-all duration-150"
+                className="input-base pl-10"
               />
             </div>
 
@@ -86,11 +91,16 @@ export default function FreelancersPage() {
                 <button
                   key={cat}
                   onClick={() => setSelectedSkill(cat)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 border ${
-                    selectedSkill === cat
-                      ? 'bg-zinc-900 text-white border-zinc-900'
-                      : 'bg-white text-zinc-500 border-zinc-200 hover:border-zinc-400'
-                  }`}
+                  className="px-3.5 py-1.5 rounded-full text-xs font-medium transition-all duration-200"
+                  style={selectedSkill === cat ? {
+                    background: 'linear-gradient(135deg, #2185D5, #818cf8)',
+                    color: '#fff',
+                    boxShadow: '0 2px 12px rgba(33,133,213,0.35)',
+                  } : {
+                    background: 'var(--surface-2)',
+                    color: 'var(--text-3)',
+                    border: '1px solid var(--border)',
+                  }}
                 >
                   {cat}
                 </button>
@@ -98,8 +108,9 @@ export default function FreelancersPage() {
             </div>
 
             {/* Reputation slider */}
-            <div className="flex items-center gap-3">
-              <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-widest whitespace-nowrap">
+            <div className="flex items-center gap-4 p-4 rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+              <SlidersHorizontal className="w-4 h-4 shrink-0 text-[#2185D5]" />
+              <span className="text-[10.5px] font-semibold uppercase tracking-widest whitespace-nowrap" style={{ color: 'var(--text-3)' }}>
                 Reputación mín.
               </span>
               <input
@@ -108,19 +119,21 @@ export default function FreelancersPage() {
                 max={200}
                 value={minRep}
                 onChange={(e) => setMinRep(Number(e.target.value))}
-                className="flex-1 accent-zinc-900"
+                className="flex-1"
+                style={{ accentColor: '#2185D5' }}
               />
-              <span className="text-sm font-semibold text-zinc-900 min-w-[40px] text-right">
+              <span
+                className="text-sm font-bold min-w-[40px] text-right tabular-nums"
+                style={{ color: minRep > 0 ? '#60b8f0' : 'var(--text-3)' }}
+              >
                 {minRep}
               </span>
             </div>
           </div>
 
-          {/* Grid */}
+          {/* Results */}
           {loading ? (
-            <div className="flex justify-center py-16">
-              <Spinner size="lg" />
-            </div>
+            <div className="flex justify-center py-20"><Spinner size="lg" /></div>
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={Users}
@@ -129,8 +142,10 @@ export default function FreelancersPage() {
             />
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filtered.map((f) => (
-                <FreelancerCard key={f._id} freelancer={f} />
+              {filtered.map((f, i) => (
+                <div key={f._id} className="animate-fade-up" style={{ animationDelay: `${i * 50}ms` }}>
+                  <FreelancerCard freelancer={f} />
+                </div>
               ))}
             </div>
           )}

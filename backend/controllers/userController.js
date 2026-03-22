@@ -6,6 +6,27 @@ const { Project } = require('../models/Project');
 const { EventParticipant } = require('../models/Event');
 const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
 
+/**
+ * GET /users/me — returns logged-in user from JWT cookie
+ */
+const getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('-password_hash');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    let profile = null;
+    if (user.role === 'freelancer') {
+      profile = await FreelancerProfile.findOne({ user_id: user._id });
+    } else if (user.role === 'recruiter') {
+      profile = await RecruiterProfile.findOne({ user_id: user._id });
+    }
+
+    res.status(200).json({ user, profile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 const getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select('-password_hash');
@@ -237,4 +258,4 @@ const getRanking = async (req, res) => {
   }
 };
 
-module.exports = { getUser, deleteUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking };
+module.exports = { getMe, getUser, deleteUser, updateProfile, getOnChainProfile, searchFreelancers, getRanking };

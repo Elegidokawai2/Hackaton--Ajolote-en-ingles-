@@ -11,17 +11,17 @@ import api from '@/lib/api';
 import type { Notification } from '@/types';
 
 const freelancerLinks = [
-  { href: '/events',      label: 'Eventos' },
-  { href: '/projects',    label: 'Proyectos' },
+  { href: '/events', label: 'Eventos' },
+  { href: '/projects', label: 'Proyectos' },
   { href: '/freelancers', label: 'Freelancers' },
-  { href: '/wallet',      label: 'Wallet' },
+  { href: '/wallet', label: 'Wallet' },
 ];
 
 const recruiterLinks = [
-  { href: '/events',      label: 'Eventos' },
-  { href: '/projects',    label: 'Proyectos' },
-  { href: '/freelancers', label: 'Talento' },
-  { href: '/wallet',      label: 'Wallet' },
+  { href: '/events', label: 'Eventos' },
+  { href: '/projects', label: 'Proyectos' },
+  { href: '/freelancers', label: 'Talentos' },
+  { href: '/wallet', label: 'Wallet' },
 ];
 
 function HexLogo() {
@@ -30,7 +30,7 @@ function HexLogo() {
       className="transition-transform duration-300 group-hover:scale-110">
       <defs>
         <linearGradient id="hexGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%"   stopColor="#2185D5" />
+          <stop offset="0%" stopColor="#2185D5" />
           <stop offset="100%" stopColor="#818cf8" />
         </linearGradient>
       </defs>
@@ -68,8 +68,17 @@ export default function Navbar() {
     if (!user) return;
     const fetchNotifs = () => {
       api.get('/notifications')
-        .then((res) => setNotifications(Array.isArray(res.data) ? res.data : []))
-        .catch(() => {});
+        .then((res) => {
+          // API returns { notifications: [...], unread_count: N, pagination: {...} }
+          const data = res.data;
+          if (data && Array.isArray(data.notifications)) {
+            setNotifications(data.notifications);
+          } else if (Array.isArray(data)) {
+            // fallback: plain array (shouldn't happen but safety net)
+            setNotifications(data);
+          }
+        })
+        .catch(() => { });
     };
     fetchNotifs();
     const interval = setInterval(fetchNotifs, 30000);
@@ -92,7 +101,7 @@ export default function Navbar() {
   const unread = notifications.filter((n) => !n.read).length;
 
   const handleLogout = async () => {
-    try { await api.post('/auth/logout'); } catch {}
+    try { await api.post('/auth/logout'); } catch { }
     logout();
     router.push('/auth/login');
   };
@@ -101,30 +110,29 @@ export default function Navbar() {
     try {
       await api.patch(`/notifications/${id}/read`);
       setNotifications((prev) => prev.map((n) => (n._id === id ? { ...n, read: true } : n)));
-    } catch {}
+    } catch { }
   };
 
   const handleMarkAllRead = async () => {
     try {
       await api.patch('/notifications/read-all');
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
-    } catch {}
+    } catch { }
   };
 
   return (
     <>
       <nav
-        className={`navbar-glass fixed top-0 left-0 right-0 h-14 z-40 transition-all duration-300 ${
-          scrolled ? 'shadow-[0_4px_40px_rgba(0,0,0,0.5)]' : ''
-        }`}
+        className={`navbar-glass backdrop-blur-sm fixed top-0 left-0 right-0 h-14 z-40 transition-all duration-300 ${scrolled ? 'shadow-[0_4px_40px_rgba(0,0,0,0.5)]' : ''
+          }`}
       >
         <div className="max-w-6xl mx-auto h-full px-4 grid grid-cols-3 items-center">
 
           {/* LEFT: Logo */}
           <Link href="/dashboard" className="flex items-center gap-2 w-fit group">
             <HexLogo />
-            <span className="text-white font-semibold text-sm tracking-tight transition-colors duration-200 group-hover:text-[#60b8f0]">
-              ProofWork
+            <span className="text-white font-semibold text-md tracking-tight transition-colors duration-200 group-hover:text-[#60b8f0]">
+              Nuup
             </span>
           </Link>
 

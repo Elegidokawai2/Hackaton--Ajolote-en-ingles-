@@ -490,6 +490,8 @@ body::before {
   padding: 0.55rem 0.8rem;
   font-size: 0.875rem;
   color: var(--text-1);
+  /* force native pickers (date, time, select) to use dark chrome */
+  color-scheme: dark;
   transition:
     border-color var(--t-fast) var(--ease),
     box-shadow var(--t-fast) var(--ease),
@@ -499,6 +501,16 @@ body::before {
 
 .input-base::placeholder {
   color: var(--text-3);
+}
+
+/* Autofill — override browser yellow/white flash */
+.input-base:-webkit-autofill,
+.input-base:-webkit-autofill:hover,
+.input-base:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-1);
+  -webkit-box-shadow: 0 0 0px 1000px var(--surface-2) inset;
+  box-shadow: 0 0 0px 1000px var(--surface-2) inset;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .input-base:hover {

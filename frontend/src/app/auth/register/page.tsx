@@ -87,7 +87,7 @@ export default function RegisterPage() {
             >
               <HexLogo />
             </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">ProofWork</h1>
+            <h1 className="text-2xl font-bold text-white tracking-tight">Nuup</h1>
             <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>Crea tu cuenta gratis</p>
           </div>
 
