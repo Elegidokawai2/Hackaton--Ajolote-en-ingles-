@@ -3,18 +3,18 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, token, Address, BytesN, Env, IntoVal, Symbol,
 };
 
-// ─── Data types ─────────────────────────────────────────────────────────────
+// ─── Data types ──────────────────────────────────────────────────────────────
 
 #[derive(Clone, PartialEq, Debug)]
 #[contracttype]
 pub enum ProjectStatus {
-    Created,    // Proyecto creado, esperando aceptación del freelancer
-    Active,     // Freelancer aceptó, trabajando
-    Delivered,  // Freelancer entregó, esperando revisión del reclutador
-    Correcting, // Reclutador pidió correcciones
-    Disputed,   // Disputa abierta, esperando resolución del admin
-    Completed,  // Proyecto completado y pagado
-    Cancelled,  // Proyecto cancelado, fondos devueltos
+    Created,
+    Active,
+    Delivered,
+    Correcting,
+    Disputed,
+    Completed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug)]
@@ -22,16 +22,16 @@ pub enum ProjectStatus {
 pub struct ProjectData {
     pub recruiter: Address,
     pub freelancer: Address,
-    pub amount: i128,              // Pago principal
-    pub guarantee: i128,           // Garantía depositada por el reclutador
-    pub deadline: u64,             // Timestamp límite
+    pub amount: i128,
+    pub guarantee: i128,
+    pub deadline: u64,
     pub status: ProjectStatus,
-    pub delivery_hash: BytesN<32>, // Hash del entregable (bytes vacíos si no se ha entregado)
-    pub correction_count: u32,     // Número de correcciones solicitadas
-    pub category: Symbol,          // Categoría para reputación
+    pub delivery_hash: BytesN<32>,
+    pub correction_count: u32,
+    pub category: Symbol,
 }
 
-// ─── Storage keys ───────────────────────────────────────────────────────────
+// ─── Storage keys ────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 #[contracttype]
@@ -39,39 +39,104 @@ pub enum DataKey {
     Admin,
     Token,
     ReputationAddr,
-    PlatformAddr,     // Plataforma a la que se le va la comisión
+    PlatformAddr,
+    WalletRegistryAddr,  // Address del contrato WalletRegistry
     Project(u64),
     Counter,
 }
- 
-// ─── Contract ───────────────────────────────────────────────────────────────
+
+// ─── Contrato ────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct ProjectContract;
 
 #[contractimpl]
 impl ProjectContract {
-    // ── Inicialización ──────────────────────────────────────────────────
 
-    pub fn initialize(env: Env, admin: Address, token: Address, reputation_addr: Address, platform_addr: Address) {
+    // ── Inicialización ────────────────────────────────────────────────────────
+
+    /// Configura admin, token, reputación, plataforma y WalletRegistry.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        token: Address,
+        reputation_addr: Address,
+        platform_addr: Address,
+        wallet_registry_addr: Address,
+    ) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage()
-            .instance()
-            .set(&DataKey::ReputationAddr, &reputation_addr);
-        env.storage()
-            .instance()
-            .set(&DataKey::PlatformAddr, &platform_addr);
+        env.storage().instance().set(&DataKey::ReputationAddr, &reputation_addr);
+        env.storage().instance().set(&DataKey::PlatformAddr, &platform_addr);
+        env.storage().instance().set(&DataKey::WalletRegistryAddr, &wallet_registry_addr);
         env.storage().instance().set(&DataKey::Counter, &0u64);
     }
 
-    // ── Creación de proyectos ───────────────────────────────────────────
+    // ── Helpers internos ──────────────────────────────────────────────────────
 
-    /// Crea un nuevo proyecto. El reclutador deposita amount + guarantee en escrow.
+    /// Verifica que una wallet esté registrada y activa en WalletRegistry.
+    fn require_active_wallet(env: &Env, wallet: &Address) {
+        let registry_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::WalletRegistryAddr)
+            .unwrap();
+
+        let is_active: bool = env.invoke_contract(
+            &registry_addr,
+            &Symbol::new(env, "is_active_by_wallet"),
+            (wallet.clone(),).into_val(env),
+        );
+
+        if !is_active {
+            panic!("user wallet is not registered or is inactive");
+        }
+    }
+
+    /// Verifica que una wallet tenga el rol esperado.
+    fn require_role(env: &Env, wallet: &Address, expected_role_tag: &str) {
+        let registry_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::WalletRegistryAddr)
+            .unwrap();
+
+        let role_val: Symbol = env.invoke_contract(
+            &registry_addr,
+            &Symbol::new(env, "get_role_by_wallet"),
+            (wallet.clone(),).into_val(env),
+        );
+
+        if role_val != Symbol::new(env, expected_role_tag) {
+            panic!("wallet does not have the required role for this operation");
+        }
+    }
+
+    /// Helper interno para actualizar reputación via cross-contract call.
+    fn update_reputation(env: &Env, user: &Address, category: &Symbol, delta: u32) {
+        let reputation_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReputationAddr)
+            .unwrap();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+
+        env.invoke_contract::<()>(
+            &reputation_addr,
+            &Symbol::new(env, "add_reputation"),
+            (admin, user.clone(), category.clone(), delta).into_val(env),
+        );
+    }
+
+    // ── Creación de proyectos ─────────────────────────────────────────────────
+
+    /// Crea un nuevo proyecto. El reclutador y el freelancer deben estar
+    /// registrados y activos en WalletRegistry con sus roles correspondientes.
+    /// El reclutador deposita amount + guarantee en escrow.
     pub fn create_project(
         env: Env,
         recruiter: Address,
@@ -83,6 +148,14 @@ impl ProjectContract {
     ) -> u64 {
         recruiter.require_auth();
 
+        // Validar reclutador: debe existir, estar activo y tener rol Recruiter
+        Self::require_active_wallet(&env, &recruiter);
+        Self::require_role(&env, &recruiter, "Recruiter");
+
+        // Validar freelancer: debe existir, estar activo y tener rol Freelancer
+        Self::require_active_wallet(&env, &freelancer);
+        Self::require_role(&env, &freelancer, "Freelancer");
+
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -93,23 +166,18 @@ impl ProjectContract {
         let now = env.ledger().timestamp();
         let one_day_secs: u64 = 24 * 60 * 60;
         if deadline < now + one_day_secs {
-            panic!("deadline must be at least 1 day from now")
+            panic!("deadline must be at least 1 day from now");
         }
 
-        // Transferir amount + guarantee al contrato (escrow)
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
-        let total = amount + guarantee;
-        token_client.transfer(&recruiter, &env.current_contract_address(), &total);
+        token_client.transfer(&recruiter, &env.current_contract_address(), &(amount + guarantee));
 
-        // Generar ID
         let mut counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         counter += 1;
         env.storage().instance().set(&DataKey::Counter, &counter);
 
-        // Hash vacío para inicializar
         let empty_hash = BytesN::from_array(&env, &[0u8; 32]);
-
         let project = ProjectData {
             recruiter,
             freelancer,
@@ -121,18 +189,20 @@ impl ProjectContract {
             correction_count: 0,
             category,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(counter), &project);
+        env.storage().persistent().set(&DataKey::Project(counter), &project);
 
         counter
     }
 
-    // ── Aceptación ──────────────────────────────────────────────────────
+    // ── Aceptación ────────────────────────────────────────────────────────────
 
     /// El freelancer asignado acepta el proyecto.
+    /// Se valida que siga activo al momento de aceptar.
     pub fn accept_project(env: Env, project_id: u64, freelancer: Address) {
         freelancer.require_auth();
+
+        // Re-validar actividad al momento de aceptar (puede haber sido desactivado después)
+        Self::require_active_wallet(&env, &freelancer);
 
         let mut project: ProjectData = env
             .storage()
@@ -148,12 +218,10 @@ impl ProjectContract {
         }
 
         project.status = ProjectStatus::Active;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Entrega ─────────────────────────────────────────────────────────
+    // ── Entrega ───────────────────────────────────────────────────────────────
 
     /// El freelancer envía su entregable.
     pub fn submit_delivery(
@@ -179,14 +247,12 @@ impl ProjectContract {
 
         project.delivery_hash = delivery_hash;
         project.status = ProjectStatus::Delivered;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Aprobación ──────────────────────────────────────────────────────
+    // ── Aprobación ────────────────────────────────────────────────────────────
 
-    /// El reclutador aprueba la entrega. Se paga al freelancer y se actualiza reputación.
+    /// El reclutador aprueba la entrega. El pago va directo a la wallet custodial del freelancer.
     pub fn approve_delivery(env: Env, project_id: u64, recruiter: Address) {
         recruiter.require_auth();
 
@@ -207,25 +273,22 @@ impl ProjectContract {
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let token_client = token::Client::new(&env, &token_addr);
 
-        // 7% sobre el total en escrow (amount + guarantee)
         let total_escrow = project.amount + project.guarantee;
         let commission = total_escrow * 7 / 100;
         let payout = total_escrow - commission;
 
         token_client.transfer(&env.current_contract_address(), &platform, &commission);
+        // Pago directo a la wallet custodial del freelancer
         token_client.transfer(&env.current_contract_address(), &project.freelancer, &payout);
 
         Self::update_reputation(&env, &project.freelancer, &project.category, 5);
 
         project.status = ProjectStatus::Completed;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Correcciones ────────────────────────────────────────────────────
+    // ── Correcciones ──────────────────────────────────────────────────────────
 
-    /// El reclutador solicita correcciones. Máximo 2 rondas.
     pub fn request_correction(env: Env, project_id: u64, recruiter: Address) {
         recruiter.require_auth();
 
@@ -247,14 +310,11 @@ impl ProjectContract {
 
         project.correction_count += 1;
         project.status = ProjectStatus::Correcting;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Rechazo → disputa ───────────────────────────────────────────────
+    // ── Rechazo → disputa ─────────────────────────────────────────────────────
 
-    /// El reclutador rechaza la entrega, abriendo una disputa para resolución del admin.
     pub fn reject_delivery(env: Env, project_id: u64, recruiter: Address) {
         recruiter.require_auth();
 
@@ -272,14 +332,11 @@ impl ProjectContract {
         }
 
         project.status = ProjectStatus::Disputed;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Resolución de disputas ──────────────────────────────────────────
+    // ── Resolución de disputas ────────────────────────────────────────────────
 
-    /// Solo el admin puede resolver disputas. Decide a favor del freelancer o del reclutador.
     pub fn resolve_dispute(
         env: Env,
         project_id: u64,
@@ -310,7 +367,6 @@ impl ProjectContract {
         let commission = total_escrow * 7 / 100;
         let payout = total_escrow - commission;
 
-        // La comisión se cobra siempre, independientemente de a quién favorezca la disputa
         token_client.transfer(&env.current_contract_address(), &platform, &commission);
 
         if favor_freelancer {
@@ -322,15 +378,13 @@ impl ProjectContract {
             project.status = ProjectStatus::Cancelled;
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Timeouts ────────────────────────────────────────────────────────
+    // ── Timeouts ──────────────────────────────────────────────────────────────
 
-    /// Si el deadline pasó y el proyecto está en Delivered sin acción del reclutador,
-    /// se auto-aprueba y paga al freelancer.
+    /// Auto-aprueba el proyecto si el reclutador no revisó antes del deadline.
+    /// El pago va directo a la wallet custodial del freelancer.
     pub fn timeout_approve(env: Env, project_id: u64) {
         let mut project: ProjectData = env
             .storage()
@@ -361,13 +415,11 @@ impl ProjectContract {
         Self::update_reputation(&env, &project.freelancer, &project.category, 5);
 
         project.status = ProjectStatus::Completed;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    /// Si el deadline pasó y el freelancer nunca aceptó (status Created),
-    /// se devuelven los fondos al reclutador.
+    /// Devuelve los fondos al reclutador si el freelancer nunca aceptó
+    /// o nunca re-entregó tras una corrección.
     pub fn timeout_refund(env: Env, project_id: u64) {
         let mut project: ProjectData = env
             .storage()
@@ -375,7 +427,6 @@ impl ProjectContract {
             .get(&DataKey::Project(project_id))
             .unwrap();
 
-        // Bug corregido: && en lugar de ||
         if project.status != ProjectStatus::Created && project.status != ProjectStatus::Correcting {
             panic!("project must be in Created or Correcting status for timeout_refund");
         }
@@ -394,45 +445,20 @@ impl ProjectContract {
         let payout = total_escrow - commission;
 
         token_client.transfer(&env.current_contract_address(), &platform, &commission);
+        // La devolución va a la wallet custodial del reclutador
         token_client.transfer(&env.current_contract_address(), &project.recruiter, &payout);
 
         project.status = ProjectStatus::Cancelled;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Project(project_id), &project);
+        env.storage().persistent().set(&DataKey::Project(project_id), &project);
     }
 
-    // ── Consultas ───────────────────────────────────────────────────────
+    // ── Consultas ─────────────────────────────────────────────────────────────
 
-    /// Retorna los datos de un proyecto.
     pub fn get_project(env: Env, project_id: u64) -> ProjectData {
         env.storage()
             .persistent()
             .get(&DataKey::Project(project_id))
             .unwrap()
-    }
-
-    // ── Internal helpers ────────────────────────────────────────────────
-
-    fn update_reputation(env: &Env, user: &Address, category: &Symbol, delta: u32) {
-        let reputation_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::ReputationAddr)
-            .unwrap();
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-
-        env.invoke_contract::<()>(
-            &reputation_addr,
-            &Symbol::new(env, "add_reputation"),
-            (
-                admin,
-                user.clone(),
-                category.clone(),
-                delta,
-            )
-                .into_val(env),
-        );
     }
 }
 

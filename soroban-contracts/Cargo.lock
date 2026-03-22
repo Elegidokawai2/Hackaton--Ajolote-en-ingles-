@@ -594,6 +594,7 @@ checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
 name = "event_contract"
 version = "0.0.0"
 dependencies = [
+ "reputation_ledger",
  "soroban-sdk",
 ]
 
@@ -1635,6 +1636,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "wallet_registry"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]
