@@ -47,6 +47,7 @@ const disputeRoutes = require('./routes/disputeRoutes');
 const reputationRoutes = require('./routes/reputationRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 // ── Routes ──
 app.use('/api/auth', authRoutes);
@@ -60,6 +61,7 @@ app.use('/api/disputes', disputeRoutes);
 app.use('/api/reputation', reputationRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/admin', adminRoutes);
 
 app.get('/api', (req, res) => {
   res.send('ProofWork API is running...');

@@ -25,8 +25,8 @@ export default function Button({
   const variants = {
     primary: 'btn-primary',
     secondary: 'btn-secondary',
-    danger: 'border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:border-red-300 rounded-[9px] transition-all duration-150',
-    ghost: 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 rounded-[9px] transition-all duration-150',
+    danger: 'border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:border-red-500/50 hover:text-red-300 rounded-[9px] transition-all duration-200',
+    ghost: 'text-[color:var(--text-3)] hover:text-white hover:bg-white/[0.06] rounded-[9px] transition-all duration-200',
   };
 
   const sizes = {

@@ -89,7 +89,7 @@ export default function LoginPage() {
             >
               <HexLogo />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white">ProofWork</h1>
+            <h1 className="text-2xl font-bold tracking-tight text-white">Nuup</h1>
             <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>Tu sesión te espera</p>
           </div>
 

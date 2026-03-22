@@ -26,7 +26,7 @@ export default function ProjectsPage() {
     const fetchProjects = async () => {
       try {
         const res = await api.get('/projects');
-        setProjects(res.data);
+        setProjects(Array.isArray(res.data) ? res.data : []);
       } catch { }
       setLoading(false);
     };
@@ -39,64 +39,87 @@ export default function ProjectsPage() {
     return true;
   });
 
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'active', label: 'Activos' },
-    { key: 'completed', label: 'Completados' },
-    { key: 'all', label: 'Todos' },
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: 'active', label: 'Activos', count: projects.filter(p => !['completed', 'rejected', 'cancelled'].includes(p.status)).length },
+    { key: 'completed', label: 'Completados', count: projects.filter(p => p.status === 'completed').length },
+    { key: 'all', label: 'Todos', count: projects.length },
   ];
 
   return (
     <ProtectedRoute>
       <Navbar />
-      <div className="pt-14 min-h-screen bg-zinc-100">
-        <div className="max-w-6xl mx-auto px-4 py-8">
-          <div className="flex items-center justify-between mb-6">
+      <div className="pt-14 min-h-screen" style={{ background: 'var(--bg)' }}>
+        {/* BG orbs */}
+        <div className="fixed inset-0 pointer-events-none overflow-hidden" style={{ zIndex: 0 }}>
+          <div className="glow-orb w-[500px] h-[500px] -top-40 left-0 opacity-[0.07]" style={{ background: '#2185D5' }} />
+          <div className="glow-orb w-[400px] h-[400px] -bottom-32 right-0 opacity-[0.05]" style={{ background: '#818cf8' }} />
+        </div>
+
+        <div className="relative z-10 max-w-6xl mx-auto px-4 py-8">
+          {/* Header */}
+          <div className="animate-fade-up flex items-end justify-between mb-8">
             <div>
-              <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Proyectos</h1>
-              <p className="text-sm text-zinc-500 mt-1">Gestiona tus contratos 1:1</p>
+              <p className="text-[10.5px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: 'var(--text-3)' }}>
+                Contratos 1:1
+              </p>
+              <h1 className="text-3xl font-bold text-white tracking-tight">Proyectos</h1>
+              <p className="text-sm mt-1.5" style={{ color: 'var(--text-2)' }}>
+                Gestiona tus contratos privados con garantía escrow
+              </p>
             </div>
             {user?.role === 'recruiter' && (
               <Button onClick={() => router.push('/projects/create')}>
-                <Plus className="w-4 h-4 mr-1.5" />
+                <Plus className="w-4 h-4" />
                 Nuevo proyecto
               </Button>
             )}
           </div>
 
           {/* Tabs */}
-          <div className="flex gap-1 mb-6">
+          <div className="animate-fade-up delay-100 flex gap-1 mb-7 p-1 w-fit rounded-xl" style={{ background: 'var(--surface)' }}>
             {tabs.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-150 ${tab === t.key
-                    ? 'bg-zinc-900 text-white'
-                    : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-200'
-                  }`}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+                style={tab === t.key ? {
+                  background: 'linear-gradient(135deg, #2185D5, #818cf8)',
+                  color: '#fff',
+                  boxShadow: '0 2px 12px rgba(33,133,213,0.30)',
+                } : {
+                  color: 'var(--text-3)',
+                }}
               >
                 {t.label}
+                {t.count > 0 && (
+                  <span
+                    className="text-[10px] font-bold px-1.5 py-0.5 rounded-full"
+                    style={tab === t.key ? { background: 'rgba(255,255,255,0.20)' } : { background: 'var(--surface-3)', color: 'var(--text-3)' }}
+                  >
+                    {t.count}
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
+          {/* Content */}
           {loading ? (
-            <div className="flex justify-center py-16">
-              <Spinner size="lg" />
-            </div>
+            <div className="flex justify-center py-20"><Spinner size="lg" /></div>
           ) : filtered.length === 0 ? (
             <EmptyState
               icon={Briefcase}
               title="Sin proyectos"
               description="No tienes proyectos en esta categoría aún."
+              actionLabel={user?.role === 'recruiter' ? 'Crear proyecto' : undefined}
+              onAction={user?.role === 'recruiter' ? () => router.push('/projects/create') : undefined}
             />
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filtered.map((project) => (
-                <ProjectCard
-                  key={project._id}
-                  project={project}
-                  currentUserId={user?._id || ''}
-                />
+              {filtered.map((project, i) => (
+                <div key={project._id} className="animate-fade-up" style={{ animationDelay: `${i * 55}ms` }}>
+                  <ProjectCard project={project} currentUserId={user?._id || ''} />
+                </div>
               ))}
             </div>
           )}
