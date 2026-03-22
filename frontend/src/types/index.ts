@@ -8,6 +8,7 @@ export interface User {
   bio: string;
   country: string;
   status: 'active' | 'suspended' | 'banned';
+  stellar_public_key: string;
   last_login: string | null;
   created_at: string;
   updated_at: string;

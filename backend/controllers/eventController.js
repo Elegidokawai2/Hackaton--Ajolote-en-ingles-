@@ -3,6 +3,7 @@ const { Wallet, Transaction, Escrow } = require('../models/Wallet');
 const { Reputation, ReputationLog } = require('../models/Reputation');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
 const { Keypair } = require('@stellar/stellar-sdk');
 const crypto = require('crypto');
 const contracts = require('../contracts');
@@ -338,6 +339,42 @@ const selectWinner = async (req, res) => {
         { event_id: req.params.id, freelancer_id: submission.freelancer_id },
         { status: 'winner' }
       );
+
+      // ── Actualizar SearchIndexFreelancers para que aparezca con reputación ──
+      try {
+        const REP_PER_WIN = 10; // puntos de reputación por ganar un evento
+        const updateOp = {
+          $inc: { reputation_score: REP_PER_WIN, completed_projects: 1 },
+          $set: { rating: 0 }, // se recalcula abajo
+        };
+        // Añadir la categoría del evento al array (si no estaba ya)
+        if (event.category_id) {
+          updateOp.$addToSet = { categories: event.category_id };
+        }
+
+        const current = await SearchIndexFreelancers.findOne({ user_id: submission.freelancer_id });
+        if (current) {
+          const eventsWon = (current.rating > 0 ? Math.round((current.rating - 3) / 0.5) : 0) + 1;
+          updateOp.$set.rating = Math.min(5, 3 + eventsWon * 0.5);
+          await SearchIndexFreelancers.findOneAndUpdate(
+            { user_id: submission.freelancer_id },
+            updateOp,
+            { new: true }
+          );
+        } else {
+          // Si por alguna razón no existe, lo creamos
+          await SearchIndexFreelancers.create({
+            user_id: submission.freelancer_id,
+            reputation_score: REP_PER_WIN,
+            categories: event.category_id ? [event.category_id] : [],
+            completed_projects: 1,
+            rating: 3.5,
+            skills: [],
+          });
+        }
+      } catch (indexErr) {
+        console.error('Error actualizando SearchIndexFreelancers:', indexErr.message);
+      }
 
       winnerUserIds.push(submission.freelancer_id);
     }

@@ -3,6 +3,7 @@ const FreelancerProfile = require('../models/FreelancerProfile');
 const RecruiterProfile = require('../models/RecruiterProfile');
 const Session = require('../models/Session');
 const { Wallet } = require('../models/Wallet');
+const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
 const { Keypair } = require('@stellar/stellar-sdk');
 const { registerUser, isActiveByWallet } = require('../contracts');
 const bcrypt = require('bcryptjs');
@@ -61,6 +62,16 @@ const register = async (req, res) => {
         experience_level: profileData.experience_level || 'junior',
       });
       await profile.save();
+
+      // Auto-indexar en SearchIndexFreelancers para que aparezca en el buscador inmediatamente
+      await SearchIndexFreelancers.create({
+        user_id: newUser._id,
+        skills: profileData.skills || [],
+        categories: [],
+        reputation_score: 0,
+        completed_projects: 0,
+        rating: 0,
+      });
     } else if (role.toLowerCase() === 'recruiter') {
       const profile = new RecruiterProfile({
         user_id: newUser._id,

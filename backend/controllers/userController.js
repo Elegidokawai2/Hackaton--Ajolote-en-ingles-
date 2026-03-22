@@ -22,7 +22,13 @@ const getUser = async (req, res) => {
       // Fallback: buscar por _id para retrocompatibilidad
       const userById = await User.findById(publicKey).select('-password_hash');
       if (!userById) return res.status(404).json({ error: 'Usuario no encontrado.' });
-      return res.status(200).json({ success: true, data: { user: userById } });
+      let profileById = null;
+      if (userById.role === 'freelancer') {
+        profileById = await FreelancerProfile.findOne({ user_id: userById._id });
+      } else if (userById.role === 'recruiter') {
+        profileById = await RecruiterProfile.findOne({ user_id: userById._id });
+      }
+      return res.status(200).json({ success: true, data: { user: userById, profile: profileById } });
     }
 
     let profile = null;

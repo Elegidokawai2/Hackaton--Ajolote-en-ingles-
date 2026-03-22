@@ -26,17 +26,43 @@ export default function FreelancerProfilePage() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [userRes, repRes] = await Promise.all([
-          api.get(`/users/${params.id}`),
-          api.get(`/reputation/${params.id}`),
-        ]);
-        setData(userRes.data);
-        setReputations(Array.isArray(repRes.data) ? repRes.data : []);
-        try {
-          const walletRes = await api.get('/wallets');
-          setStellarAddress(walletRes.data.stellar_address || '');
-        } catch {
-          setStellarAddress('GBCMOCQAXS5GHPBZLSEDQN7AMXHSX7V6YUPOT53KPWRLED5PQFG4TCY');
+        // Step 1: fetch the user by MongoDB _id (backend also supports this)
+        const userRes = await api.get(`/users/${params.id}`);
+        const payload = userRes.data?.data ?? userRes.data;
+        const normalized: UserWithProfile = {
+          user: payload?.user ?? payload,
+          profile: payload?.profile ?? null,
+        };
+        setData(normalized);
+
+        // Step 2: use the freelancer's stellar_public_key for the reputation call
+        const freelancerPubKey = normalized.user?.stellar_public_key;
+        setStellarAddress(freelancerPubKey || '');
+
+        if (freelancerPubKey) {
+          try {
+            const repRes = await api.get(`/reputation/${freelancerPubKey}`);
+            const repPayload = repRes.data?.data ?? repRes.data;
+            // Reputation endpoint returns { slug: score } map — convert to Reputation[]
+            if (repPayload && typeof repPayload === 'object' && !Array.isArray(repPayload)) {
+              const reps = Object.entries(repPayload)
+                .filter(([, score]) => Number(score) > 0)
+                .map(([slug, score], i) => ({
+                  _id: slug + i,
+                  user_id: normalized.user?._id || '',
+                  category_id: slug,
+                  score: Number(score),
+                  level: Number(score) >= 100 ? 'gold' : Number(score) >= 50 ? 'silver' : 'bronze',
+                  created_at: '',
+                  updated_at: '',
+                }));
+              setReputations(reps as unknown as Reputation[]);
+            } else {
+              setReputations(Array.isArray(repPayload) ? repPayload : []);
+            }
+          } catch {
+            setReputations([]);
+          }
         }
       } catch {
         setData(null);
