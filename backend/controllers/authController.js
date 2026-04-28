@@ -1,14 +1,15 @@
-const User = require('../models/User');
-const FreelancerProfile = require('../models/FreelancerProfile');
-const RecruiterProfile = require('../models/RecruiterProfile');
-const Session = require('../models/Session');
-const { Wallet } = require('../models/Wallet');
-const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
-const { Keypair } = require('@stellar/stellar-sdk');
-const { registerUser, isActiveByWallet } = require('../contracts');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
+const User = require("../models/User");
+const FreelancerProfile = require("../models/FreelancerProfile");
+const RecruiterProfile = require("../models/RecruiterProfile");
+const Session = require("../models/Session");
+const { Wallet } = require("../models/Wallet");
+const SearchIndexFreelancers = require("../models/SearchIndexFreelancers");
+const { Keypair } = require("@stellar/stellar-sdk");
+const { registerUser, isActiveByWallet } = require("../contracts");
+const { encryptSecret } = require("../services/cryptoService");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 
 /**
  * POST /auth/register
@@ -19,47 +20,54 @@ const register = async (req, res) => {
     const { email, password, username, role, ...profileData } = req.body;
 
     if (!email || !password || !role) {
-      return res.status(400).json({ error: 'email, password y role son requeridos.' });
+      return res
+        .status(400)
+        .json({ error: "email, password y role son requeridos." });
     }
 
     // Validar que el email no exista
     const existing = await User.findOne({ email });
     if (existing) {
-      return res.status(400).json({ error: 'Este email ya está registrado.' });
+      return res.status(400).json({ error: "Este email ya está registrado." });
     }
 
     // Generar keypair Stellar custodial
     const keypair = Keypair.random();
     const stellarPublicKey = keypair.publicKey();
-    const encryptedSecret = keypair.secret(); // En producción: cifrar con clave maestra
+    const encryptedSecret = encryptSecret(keypair.secret());
 
     // Registrar identidad on-chain en WalletRegistry
     const adminKeypair = Keypair.fromSecret(process.env.ADMIN_SECRET);
     try {
       await registerUser(adminKeypair, stellarPublicKey, email, role);
     } catch (contractErr) {
-      console.error('Error registrando en WalletRegistry:', contractErr.message);
-      return res.status(500).json({ error: 'Error registrando identidad on-chain.' });
+      console.error(
+        "Error registrando en WalletRegistry:",
+        contractErr.message,
+      );
+      return res
+        .status(500)
+        .json({ error: "Error registrando identidad on-chain." });
     }
 
     // Crear usuario en DB
     const newUser = new User({
       email,
       password_hash: password,
-      username: username || email.split('@')[0],
+      username: username || email.split("@")[0],
       role: role.toLowerCase(),
       stellar_public_key: stellarPublicKey,
     });
     await newUser.save();
 
     // Crear perfil según rol
-    if (role.toLowerCase() === 'freelancer') {
+    if (role.toLowerCase() === "freelancer") {
       const profile = new FreelancerProfile({
         user_id: newUser._id,
-        title: profileData.title || 'New Freelancer',
-        description: profileData.description || 'Ready for work',
+        title: profileData.title || "New Freelancer",
+        description: profileData.description || "Ready for work",
         skills: profileData.skills || [],
-        experience_level: profileData.experience_level || 'junior',
+        experience_level: profileData.experience_level || "junior",
       });
       await profile.save();
 
@@ -72,10 +80,10 @@ const register = async (req, res) => {
         completed_projects: 0,
         rating: 0,
       });
-    } else if (role.toLowerCase() === 'recruiter') {
+    } else if (role.toLowerCase() === "recruiter") {
       const profile = new RecruiterProfile({
         user_id: newUser._id,
-        company_description: profileData.company_description || '',
+        company_description: profileData.company_description || "",
       });
       await profile.save();
     }
@@ -91,8 +99,8 @@ const register = async (req, res) => {
     // Emitir JWT
     const accessToken = jwt.sign(
       { id: newUser._id, publicKey: stellarPublicKey, role: newUser.role },
-      process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '7d' }
+      process.env.JWT_SECRET || "fallback_secret",
+      { expiresIn: "7d" },
     );
 
     res.status(201).json({
@@ -117,16 +125,20 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'email y password son requeridos.' });
+      return res
+        .status(400)
+        .json({ error: "email y password son requeridos." });
     }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ error: 'Credenciales inválidas.' });
+    if (!user)
+      return res.status(401).json({ error: "Credenciales inválidas." });
 
     const isCorrect = await bcrypt.compare(password, user.password_hash);
-    if (!isCorrect) return res.status(401).json({ error: 'Credenciales inválidas.' });
+    if (!isCorrect)
+      return res.status(401).json({ error: "Credenciales inválidas." });
 
-    if (user.status !== 'active') {
+    if (user.status !== "active") {
       return res.status(403).json({ error: `Cuenta ${user.status}.` });
     }
 
@@ -134,14 +146,22 @@ const login = async (req, res) => {
     if (user.stellar_public_key) {
       try {
         const platformPublicKey = Keypair.fromSecret(
-          process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET
+          process.env.PLATFORM_SECRET || process.env.ADMIN_SECRET,
         ).publicKey();
-        const isActive = await isActiveByWallet(platformPublicKey, user.stellar_public_key);
+        const isActive = await isActiveByWallet(
+          platformPublicKey,
+          user.stellar_public_key,
+        );
         if (!isActive) {
-          return res.status(403).json({ error: 'Wallet desactivada on-chain.' });
+          return res
+            .status(403)
+            .json({ error: "Wallet desactivada on-chain." });
         }
       } catch (contractErr) {
-        console.error('Error validando actividad on-chain:', contractErr.message);
+        console.error(
+          "Error validando actividad on-chain:",
+          contractErr.message,
+        );
         // En desarrollo se permite continuar; en producción descomentar el return
         // return res.status(500).json({ error: 'Error validando identidad on-chain.' });
       }
@@ -150,18 +170,18 @@ const login = async (req, res) => {
     // Emitir JWT
     const accessToken = jwt.sign(
       { id: user._id, publicKey: user.stellar_public_key, role: user.role },
-      process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '7d' }
+      process.env.JWT_SECRET || "fallback_secret",
+      { expiresIn: "7d" },
     );
 
-    const refreshTokenString = crypto.randomBytes(40).toString('hex');
+    const refreshTokenString = crypto.randomBytes(40).toString("hex");
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
     const session = new Session({
       user_id: user._id,
       refresh_token: refreshTokenString,
-      user_agent: req.headers['user-agent'],
+      user_agent: req.headers["user-agent"],
       ip_address: req.ip,
       expires_at: expiresAt,
     });
@@ -173,8 +193,14 @@ const login = async (req, res) => {
     const { password_hash, ...info } = user._doc;
 
     res
-      .cookie('accessToken', accessToken, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
-      .cookie('refreshToken', refreshTokenString, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
+      .cookie("accessToken", accessToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+      })
+      .cookie("refreshToken", refreshTokenString, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+      })
       .status(200)
       .json({ success: true, data: { token: accessToken, user: info } });
   } catch (err) {
@@ -196,10 +222,10 @@ const logout = async (req, res) => {
   }
 
   res
-    .clearCookie('accessToken', { sameSite: 'none', secure: true })
-    .clearCookie('refreshToken', { sameSite: 'none', secure: true })
+    .clearCookie("accessToken", { sameSite: "none", secure: true })
+    .clearCookie("refreshToken", { sameSite: "none", secure: true })
     .status(200)
-    .json({ success: true, data: { message: 'Sesión cerrada.' } });
+    .json({ success: true, data: { message: "Sesión cerrada." } });
 };
 
 /**
@@ -207,26 +233,29 @@ const logout = async (req, res) => {
  */
 const refresh = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken) return res.status(401).json({ error: 'No autenticado.' });
+  if (!refreshToken) return res.status(401).json({ error: "No autenticado." });
 
   const session = await Session.findOne({ refresh_token: refreshToken });
   if (!session || session.expires_at < new Date()) {
-    return res.status(403).json({ error: 'Token inválido o expirado.' });
+    return res.status(403).json({ error: "Token inválido o expirado." });
   }
 
   const user = await User.findById(session.user_id);
-  if (!user) return res.status(403).json({ error: 'Usuario no encontrado.' });
+  if (!user) return res.status(403).json({ error: "Usuario no encontrado." });
 
   const accessToken = jwt.sign(
     { id: user._id, publicKey: user.stellar_public_key, role: user.role },
-    process.env.JWT_SECRET || 'fallback_secret',
-    { expiresIn: '7d' }
+    process.env.JWT_SECRET || "fallback_secret",
+    { expiresIn: "7d" },
   );
 
   res
-    .cookie('accessToken', accessToken, { httpOnly: true, secure: process.env.NODE_ENV === 'production' })
+    .cookie("accessToken", accessToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+    })
     .status(200)
-    .json({ success: true, data: { message: 'Token renovado.' } });
+    .json({ success: true, data: { message: "Token renovado." } });
 };
 
 module.exports = { register, login, logout, refresh };
