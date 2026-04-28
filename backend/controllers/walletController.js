@@ -1,10 +1,13 @@
-const { Wallet, Transaction, Escrow } = require('../models/Wallet');
-const { getAccountBalances } = require('../services/stellarService');
-const { createNotification } = require('../services/notificationService');
-const { validateCLABE } = require('../utils/validateCLABE');
-const vibrantService = require('../services/vibrantService');
+const { Wallet, Transaction, Escrow } = require("../models/Wallet");
+const { getAccountBalances } = require("../services/stellarService");
+const { createNotification } = require("../services/notificationService");
+const { validateCLABE } = require("../utils/validateCLABE");
+const vibrantService = require("../services/vibrantService");
+const { sendEmail, loadTemplate } = require("../services/emailService");
 
-const MXNE_ASSET_CODE = process.env.MXNE_ASSET_CODE || 'MXNE';
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3001";
+
+const MXNE_ASSET_CODE = process.env.MXNE_ASSET_CODE || "MXNE";
 const MXNE_ASSET_ISSUER = process.env.MXNE_ASSET_ISSUER;
 
 const getWallet = async (req, res) => {
@@ -14,7 +17,7 @@ const getWallet = async (req, res) => {
       // Mock creating a wallet with a fake stellar address for MVP fallback
       wallet = new Wallet({
         user_id: req.userId,
-        stellar_address: `G_${req.userId}_MOCK_ADDRESS`
+        stellar_address: `G_${req.userId}_MOCK_ADDRESS`,
       });
       await wallet.save();
     }
@@ -26,29 +29,33 @@ const getWallet = async (req, res) => {
       ...wallet.toObject(),
       on_chain_balances,
     });
-  } catch(err) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 const getTransactions = async (req, res) => {
   try {
-    const transactions = await Transaction.find({ user_id: req.userId }).sort({ created_at: -1 });
+    const transactions = await Transaction.find({ user_id: req.userId }).sort({
+      created_at: -1,
+    });
     res.status(200).json(transactions);
-  } catch(err) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };
 
 const getEscrows = async (req, res) => {
-    try {
-        // Technically escrows belong to projects or events, not directly users in the current schema
-        // but we can fetch them via project references. This is a simplified fetch.
-        const escrows = await Escrow.find({ funder_id: req.userId }).sort({ created_at: -1 });
-        res.status(200).json(escrows);
-    } catch(err) {
-        res.status(500).json({ error: err.message });
-    }
+  try {
+    // Technically escrows belong to projects or events, not directly users in the current schema
+    // but we can fetch them via project references. This is a simplified fetch.
+    const escrows = await Escrow.find({ funder_id: req.userId }).sort({
+      created_at: -1,
+    });
+    res.status(200).json(escrows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 /**
@@ -65,9 +72,11 @@ const getBalance = async (req, res) => {
     let on_chain_balances = [];
     try {
       on_chain_balances = await getAccountBalances(wallet.stellar_address);
-      const xlmEntry = on_chain_balances.find(b => b.asset_type === 'native');
-      balance_xlm = parseFloat(xlmEntry?.balance ?? '0');
-    } catch { /* cuenta aún no activada */ }
+      const xlmEntry = on_chain_balances.find((b) => b.asset_type === "native");
+      balance_xlm = parseFloat(xlmEntry?.balance ?? "0");
+    } catch {
+      /* cuenta aún no activada */
+    }
 
     res.status(200).json({
       user_id: req.userId,
@@ -91,20 +100,25 @@ const depositFunds = async (req, res) => {
     const { amount_mxn, amount_mxne } = req.body;
 
     if (!amount_mxn || !amount_mxne || amount_mxn <= 0 || amount_mxne <= 0) {
-      return res.status(400).json({ message: "Valid amount_mxn and amount_mxne are required." });
+      return res
+        .status(400)
+        .json({ message: "Valid amount_mxn and amount_mxne are required." });
     }
 
     const wallet = await Wallet.findOne({ user_id: req.userId });
-    if (!wallet) return res.status(404).json({ message: "Wallet not found! Please create a wallet first." });
+    if (!wallet)
+      return res
+        .status(404)
+        .json({ message: "Wallet not found! Please create a wallet first." });
 
     // Create deposit transaction
     const transaction = new Transaction({
       user_id: req.userId,
-      type: 'deposit',
+      type: "deposit",
       amount_mxn,
       amount_mxne,
-      status: 'completed',
-      stellar_tx_hash: `mock_deposit_${Date.now()}`
+      status: "completed",
+      stellar_tx_hash: `mock_deposit_${Date.now()}`,
     });
     await transaction.save();
 
@@ -112,12 +126,35 @@ const depositFunds = async (req, res) => {
     wallet.balance_mxne += amount_mxne;
     await wallet.save();
 
-    await createNotification(req.userId, 'payment', 'Depósito exitoso', `Se depositaron ${amount_mxne} MXNe a tu wallet.`, transaction._id);
+    await createNotification(
+      req.userId,
+      "payment",
+      "Depósito exitoso",
+      `Se depositaron ${amount_mxne} MXNe a tu wallet.`,
+      transaction._id,
+    );
+
+    // ── Email: deposit confirmed (critical — always send) ──
+    const depositor = await require("../models/User")
+      .findById(req.userId)
+      .select("email username");
+    if (depositor?.email) {
+      const html = loadTemplate("deposit-confirmed", {
+        recipientName: depositor.username || "Usuario",
+        amount: amount_mxne,
+        ctaUrl: `${FRONTEND_URL}/wallet`,
+      });
+      await sendEmail(
+        depositor.email,
+        `Depósito confirmado: ${amount_mxne} MXNe`,
+        html,
+      );
+    }
 
     res.status(201).json({
       message: "Deposit successful.",
       transaction,
-      new_balance: wallet.balance_mxne
+      new_balance: wallet.balance_mxne,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -133,11 +170,15 @@ const withdrawFunds = async (req, res) => {
     const amount = Number(amount_mxne);
 
     if (!amount || amount < 50) {
-      return res.status(400).json({ error: 'El monto minimo de retiro es 50 MXNe.' });
+      return res
+        .status(400)
+        .json({ error: "El monto minimo de retiro es 50 MXNe." });
     }
 
-    if (!validateCLABE(String(clabe || ''))) {
-      return res.status(400).json({ error: 'CLABE invalida. Verifica los 18 digitos.' });
+    if (!validateCLABE(String(clabe || ""))) {
+      return res
+        .status(400)
+        .json({ error: "CLABE invalida. Verifica los 18 digitos." });
     }
 
     const wallet = await Wallet.findOne({ user_id: req.userId });
@@ -145,28 +186,29 @@ const withdrawFunds = async (req, res) => {
 
     const onChainBalances = await getAccountBalances(wallet.stellar_address);
     const mxneEntry = onChainBalances.find((b) => {
-      const codeMatches = (b.asset_code || '').toUpperCase() === MXNE_ASSET_CODE.toUpperCase();
+      const codeMatches =
+        (b.asset_code || "").toUpperCase() === MXNE_ASSET_CODE.toUpperCase();
       if (!codeMatches) return false;
       if (!MXNE_ASSET_ISSUER) return true;
       return b.asset_issuer === MXNE_ASSET_ISSUER;
     });
-    const onChainBalance = parseFloat(mxneEntry?.balance || '0');
+    const onChainBalance = parseFloat(mxneEntry?.balance || "0");
 
     if (onChainBalance < amount) {
-      return res.status(400).json({ error: 'Saldo on-chain insuficiente.' });
+      return res.status(400).json({ error: "Saldo on-chain insuficiente." });
     }
 
     // Create pending transaction first for traceability/idempotency.
     const transaction = new Transaction({
       user_id: req.userId,
-      type: 'withdraw',
+      type: "withdraw",
       amount_mxn: amount, // 1:1
       amount_mxne: amount,
-      status: 'pending',
+      status: "pending",
       stellar_tx_hash: `pending_withdraw_${Date.now()}`,
       metadata: {
         destination_clabe_last4: String(clabe).slice(-4),
-      }
+      },
     });
     await transaction.save();
 
@@ -175,9 +217,13 @@ const withdrawFunds = async (req, res) => {
       // For now we keep compatibility by using the stored value directly.
       const rawSecret = wallet.encrypted_secret;
       const txHash = await vibrantService.sendMXNeToVibrant(rawSecret, amount);
-      const payoutRef = await vibrantService.requestSPEIPayout(String(clabe), amount, transaction._id.toString());
+      const payoutRef = await vibrantService.requestSPEIPayout(
+        String(clabe),
+        amount,
+        transaction._id.toString(),
+      );
 
-      transaction.status = 'processing';
+      transaction.status = "processing";
       transaction.stellar_tx_hash = txHash;
       transaction.metadata = {
         ...transaction.metadata,
@@ -187,10 +233,10 @@ const withdrawFunds = async (req, res) => {
 
       await createNotification(
         req.userId,
-        'payment',
-        'Retiro en proceso',
+        "payment",
+        "Retiro en proceso",
         `Tu retiro de ${amount} MXNe esta siendo procesado. En horario bancario SPEI suele tardar minutos; fuera de horario se procesa el siguiente dia habil.`,
-        transaction._id
+        transaction._id,
       );
 
       res.status(201).json({
@@ -198,16 +244,18 @@ const withdrawFunds = async (req, res) => {
         data: { transaction },
       });
     } catch (err) {
-      transaction.status = 'failed';
+      transaction.status = "failed";
       await transaction.save();
       await createNotification(
         req.userId,
-        'payment',
-        'Retiro fallido',
+        "payment",
+        "Retiro fallido",
         `No se pudo procesar tu retiro de ${amount} MXNe. Intenta de nuevo.`,
-        transaction._id
+        transaction._id,
       );
-      res.status(500).json({ error: 'Error al procesar el retiro. Intenta de nuevo.' });
+      res
+        .status(500)
+        .json({ error: "Error al procesar el retiro. Intenta de nuevo." });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -221,32 +269,65 @@ const withdrawFunds = async (req, res) => {
 const handleVibrantWebhook = async (req, res) => {
   try {
     if (!vibrantService.verifyWebhookSecret(req)) {
-      return res.status(401).json({ error: 'Unauthorized webhook.' });
+      return res.status(401).json({ error: "Unauthorized webhook." });
     }
 
     const { type, data } = req.body || {};
-    if (!type || !data) return res.status(400).json({ error: 'Invalid webhook payload.' });
+    if (!type || !data)
+      return res.status(400).json({ error: "Invalid webhook payload." });
 
-    if (type === 'payout.completed') {
-      const tx = await Transaction.findOne({ 'metadata.vibrant_payout_ref': data.reference });
-      if (!tx) return res.status(404).json({ error: 'Transaction not found for payout reference.' });
+    if (type === "payout.completed") {
+      const tx = await Transaction.findOne({
+        "metadata.vibrant_payout_ref": data.reference,
+      });
+      if (!tx)
+        return res
+          .status(404)
+          .json({ error: "Transaction not found for payout reference." });
 
-      tx.status = 'completed';
+      tx.status = "completed";
       await tx.save();
 
       await createNotification(
         tx.user_id,
-        'payment',
-        'Retiro completado',
-        'Tu retiro ha sido depositado en tu cuenta bancaria.',
-        tx._id
+        "payment",
+        "Retiro completado",
+        "Tu retiro ha sido depositado en tu cuenta bancaria.",
+        tx._id,
       );
+
+      // ── Email: withdrawal completed (critical — always send) ──
+      const withdrawUser = await require("../models/User")
+        .findById(tx.user_id)
+        .select("email username");
+      if (withdrawUser?.email) {
+        const clabeLast4 = String(
+          tx.metadata?.destination_clabe_last4 || "****",
+        );
+        const html = loadTemplate("withdraw-completed", {
+          recipientName: withdrawUser.username || "Usuario",
+          amount: tx.amount_mxn,
+          clabeLast4,
+          ctaUrl: `${FRONTEND_URL}/wallet`,
+        });
+        await sendEmail(
+          withdrawUser.email,
+          `Retiro completado: ${tx.amount_mxn} MXN en camino`,
+          html,
+        );
+      }
+
       return res.status(200).json({ success: true });
     }
 
-    if (type === 'payout.failed') {
-      const tx = await Transaction.findOne({ 'metadata.vibrant_payout_ref': data.reference });
-      if (!tx) return res.status(404).json({ error: 'Transaction not found for payout reference.' });
+    if (type === "payout.failed") {
+      const tx = await Transaction.findOne({
+        "metadata.vibrant_payout_ref": data.reference,
+      });
+      if (!tx)
+        return res
+          .status(404)
+          .json({ error: "Transaction not found for payout reference." });
 
       // Reverse the transfer by sending MXNe back from platform custody to user's wallet.
       const userWallet = await Wallet.findOne({ user_id: tx.user_id });
@@ -255,7 +336,7 @@ const handleVibrantWebhook = async (req, res) => {
           const reversalHash = await vibrantService.reverseWithdrawalToUser(
             userWallet.stellar_address,
             tx.amount_mxne,
-            tx._id.toString()
+            tx._id.toString(),
           );
           tx.metadata = {
             ...(tx.metadata || {}),
@@ -269,15 +350,15 @@ const handleVibrantWebhook = async (req, res) => {
         }
       }
 
-      tx.status = 'failed';
+      tx.status = "failed";
       await tx.save();
 
       await createNotification(
         tx.user_id,
-        'payment',
-        'Retiro fallido',
-        'Tu retiro no pudo completarse. El saldo fue revertido a tu wallet.',
-        tx._id
+        "payment",
+        "Retiro fallido",
+        "Tu retiro no pudo completarse. El saldo fue revertido a tu wallet.",
+        tx._id,
       );
       return res.status(200).json({ success: true });
     }
@@ -294,7 +375,7 @@ const handleVibrantWebhook = async (req, res) => {
 const getOnChainBalance = async (req, res) => {
   try {
     const wallet = await Wallet.findOne({ user_id: req.userId });
-    if (!wallet) return res.status(404).json({ message: 'Wallet not found!' });
+    if (!wallet) return res.status(404).json({ message: "Wallet not found!" });
 
     const on_chain_balances = await getAccountBalances(wallet.stellar_address);
 
