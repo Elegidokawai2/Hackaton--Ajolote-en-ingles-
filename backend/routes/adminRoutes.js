@@ -1,7 +1,3 @@
-// adminRoutes.js — Development/admin utility endpoints
-// These routes help with data management and debugging.
-// In production, add auth middleware before exposing publicly.
-
 const express = require('express');
 const router = express.Router();
 
@@ -11,6 +7,17 @@ const SearchIndexFreelancers = require('../models/SearchIndexFreelancers');
 const { Reputation } = require('../models/Reputation');
 const { Project } = require('../models/Project');
 const { EventParticipant } = require('../models/Event');
+const { verifyToken } = require('../middleware/jwt');
+const {
+  getUsers,
+  deleteUser,
+  suspendUser,
+  getDisputes,
+  resolveDispute,
+  getStats,
+  getVerificationQueue,
+  verifyCompany
+} = require('../controllers/adminController');
 
 /**
  * POST /admin/backfill-freelancers
@@ -246,5 +253,31 @@ router.post('/seed-categories', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ── Admin Management Routes ──
+
+// GET /admin/users — list all users
+router.get('/users', verifyToken, getUsers);
+
+// DELETE /admin/users/:id — delete a user
+router.delete('/users/:id', verifyToken, deleteUser);
+
+// PUT /admin/users/:id/suspend — suspend/unsuspend a user
+router.put('/users/:id/suspend', verifyToken, suspendUser);
+
+// GET /admin/disputes — list all disputes
+router.get('/disputes', verifyToken, getDisputes);
+
+// POST /admin/disputes/:id/resolve — resolve a dispute
+router.post('/disputes/:id/resolve', verifyToken, resolveDispute);
+
+// GET /admin/stats — platform statistics
+router.get('/stats', verifyToken, getStats);
+
+// GET /admin/verifications — list verification-pending recruiters
+router.get('/verifications', verifyToken, getVerificationQueue);
+
+// PUT /admin/verify-company/:id — mark company as verified
+router.put('/verify-company/:id', verifyToken, verifyCompany);
 
 module.exports = router;
